@@ -238,11 +238,11 @@
 
   // Envoyer les resultats au Worker (avec retry des echoues)
   function reportToWorker(results) {
-    if (results.length === 0) return Promise.resolve(null);
-
     // Ajouter les reports precedemment echoues
     var failed = loadFailedReports();
     var allResults = failed.concat(results);
+
+    if (allResults.length === 0) return Promise.resolve(null);
 
     return apiRequest('POST', '/report', { results: allResults }).then(function (resp) {
       if (resp && resp.ok) {

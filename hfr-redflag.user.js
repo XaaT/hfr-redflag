@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         HFR RedFlag
 // @namespace    https://github.com/XaaT/hfr-redflag
-// @version      0.3.1
+// @version      0.4.0
 // @description  Met en evidence les posts alertes a la moderation sur forum.hardware.fr
 // @author       xat
 // @match        https://forum.hardware.fr/forum2.php*
@@ -16,6 +16,7 @@
 // @license      MIT
 // ==/UserScript==
 // --- Changelog ---
+//   0.4.0 - Circuit breaker + retry queue si le Worker est down
 //   0.3.1 - Compatibilite Greasemonkey v4 + Violentmonkey (shims GM.*)
 //   0.3.0 - Cache partage via CF Worker + D1, les scans profitent a tous
 //   0.2.0 - MVP : detection modo.php, affichage fond rouge + badge, cache local
@@ -48,7 +49,77 @@
 
   var PREFIX = '[HFR RedFlag]';
   var API_URL = 'https://hfr-redflag.clement-665.workers.dev';
-  var API_VERSION = '0.3.0';
+  var API_VERSION = '0.4.0';
+
+  // --- Circuit breaker pour le Worker ---
+  // Evite de retenter le Worker s'il est down
+  var CB_KEY = 'hfr_redflag_circuit';
+  var CB_THRESHOLD = 3;       // erreurs consecutives avant ouverture
+  var CB_BASE_DELAY = 300000; // 5 min en ms
+  var CB_MAX_DELAY = 1800000; // 30 min max
+
+  function loadCircuitBreaker() {
+    try {
+      return JSON.parse(localStorage.getItem(CB_KEY)) || { failures: 0, openUntil: 0 };
+    } catch (e) {
+      return { failures: 0, openUntil: 0 };
+    }
+  }
+
+  function saveCircuitBreaker(cb) {
+    try {
+      localStorage.setItem(CB_KEY, JSON.stringify(cb));
+    } catch (e) {}
+  }
+
+  function isCircuitOpen() {
+    var cb = loadCircuitBreaker();
+    if (cb.failures < CB_THRESHOLD) return false;
+    if (Date.now() >= cb.openUntil) {
+      // Delai expire, on tente un retry (half-open)
+      return false;
+    }
+    return true;
+  }
+
+  function recordApiSuccess() {
+    saveCircuitBreaker({ failures: 0, openUntil: 0 });
+  }
+
+  function recordApiFailure() {
+    var cb = loadCircuitBreaker();
+    cb.failures++;
+    if (cb.failures >= CB_THRESHOLD) {
+      // Backoff exponentiel : 5min, 10min, 20min, 30min max
+      var delay = Math.min(CB_BASE_DELAY * Math.pow(2, cb.failures - CB_THRESHOLD), CB_MAX_DELAY);
+      cb.openUntil = Date.now() + delay;
+      console.warn(PREFIX, 'Circuit breaker ouvert, retry dans', Math.round(delay / 60000), 'min');
+    }
+    saveCircuitBreaker(cb);
+  }
+
+  // Queue des reports echoues
+  var FAILED_REPORTS_KEY = 'hfr_redflag_failed_reports';
+
+  function loadFailedReports() {
+    try {
+      return JSON.parse(localStorage.getItem(FAILED_REPORTS_KEY)) || [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function saveFailedReports(reports) {
+    try {
+      // Garder max 500 reports en queue
+      if (reports.length > 500) reports = reports.slice(-500);
+      localStorage.setItem(FAILED_REPORTS_KEY, JSON.stringify(reports));
+    } catch (e) {}
+  }
+
+  function clearFailedReports() {
+    try { localStorage.removeItem(FAILED_REPORTS_KEY); } catch (e) {}
+  }
 
   // --- Etape 1 : Extraction des donnees de la page ---
 
@@ -113,6 +184,12 @@
   // --- API Worker (cache Worker (shared)) ---
 
   function apiRequest(method, path, body) {
+    // Circuit breaker : skip si ouvert
+    if (isCircuitOpen()) {
+      console.log(PREFIX, 'API: circuit breaker ouvert, skip', path);
+      return Promise.resolve(null);
+    }
+
     return new Promise(function (resolve) {
       GM_xmlhttpRequest({
         method: method,
@@ -125,6 +202,7 @@
         timeout: 5000,
         onload: function (resp) {
           if (resp.status === 200) {
+            recordApiSuccess();
             try {
               resolve(JSON.parse(resp.responseText));
             } catch (e) {
@@ -133,15 +211,18 @@
             }
           } else {
             console.warn(PREFIX, 'API:', resp.status, path);
+            recordApiFailure();
             resolve(null);
           }
         },
         onerror: function () {
           console.warn(PREFIX, 'API: erreur reseau', path);
+          recordApiFailure();
           resolve(null);
         },
         ontimeout: function () {
           console.warn(PREFIX, 'API: timeout', path);
+          recordApiFailure();
           resolve(null);
         }
       });
@@ -155,10 +236,26 @@
       .then(function (data) { return data || {}; });
   }
 
-  // Envoyer les resultats au Worker
+  // Envoyer les resultats au Worker (avec retry des echoues)
   function reportToWorker(results) {
     if (results.length === 0) return Promise.resolve(null);
-    return apiRequest('POST', '/report', { results: results });
+
+    // Ajouter les reports precedemment echoues
+    var failed = loadFailedReports();
+    var allResults = failed.concat(results);
+
+    return apiRequest('POST', '/report', { results: allResults }).then(function (resp) {
+      if (resp && resp.ok) {
+        // Succes : vider la queue
+        clearFailedReports();
+        return resp;
+      } else {
+        // Echec : sauvegarder tout pour retry
+        saveFailedReports(allResults);
+        console.warn(PREFIX, 'Report echoue,', allResults.length, 'resultats en queue pour retry');
+        return null;
+      }
+    });
   }
 
   // --- Detection via modo.php ---

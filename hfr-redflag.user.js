@@ -1,7 +1,8 @@
 // ==UserScript==
-// @name         HFR RedFlag
+// @name         [HFR] RedFlag
 // @namespace    https://github.com/XaaT/hfr-redflag
-// @version      0.5.1
+// @icon         https://www.google.com/s2/favicons?sz=64&domain=hardware.fr
+// @version      0.5.2
 // @description  Met en evidence les posts alertes a la moderation sur forum.hardware.fr
 // @author       xat
 // @match        https://forum.hardware.fr/forum2.php*
@@ -16,6 +17,7 @@
 // @license      MIT
 // ==/UserScript==
 // --- Changelog ---
+//   0.5.2 - Renommage [HFR] RedFlag + icone favicon dans TM
 //   0.5.1 - Fix review : detection binaire stricte, compat .finally(), cache 5k, quota LS
 //   0.5.0 - Refactoring : config centralisee, nettoyage cache, code structure
 //   0.4.2 - Retrait logs debug

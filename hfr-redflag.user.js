@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         HFR RedFlag
 // @namespace    https://github.com/XaaT/hfr-redflag
-// @version      0.4.1
+// @version      0.4.2
 // @description  Met en evidence les posts alertes a la moderation sur forum.hardware.fr
 // @author       xat
 // @match        https://forum.hardware.fr/forum2.php*
@@ -16,7 +16,7 @@
 // @license      MIT
 // ==/UserScript==
 // --- Changelog ---
-//   0.4.1 - Fix retry queue + throttle 200ms + logs debug
+//   0.4.2 - Fix retry queue + throttle 200ms
 //   0.4.0 - Circuit breaker + retry queue si le Worker est down
 //   0.3.1 - Compatibilite Greasemonkey v4 + Violentmonkey (shims GM.*)
 //   0.3.0 - Cache partage via CF Worker + D1, les scans profitent a tous
@@ -245,9 +245,7 @@
 
     if (allResults.length === 0) return Promise.resolve(null);
 
-    console.log(PREFIX, 'Report: envoi de', allResults.length, 'resultats au Worker');
     return apiRequest('POST', '/report', { results: allResults }).then(function (resp) {
-      console.log(PREFIX, 'Report: reponse Worker:', JSON.stringify(resp));
       if (resp && resp.ok) {
         // Succes : vider la queue
         clearFailedReports();

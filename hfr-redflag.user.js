@@ -13,6 +13,11 @@
 // @downloadURL  https://raw.githubusercontent.com/XaaT/hfr-redflag/master/hfr-redflag.user.js
 // @license      MIT
 // ==/UserScript==
+// --- Changelog ---
+//   0.3.0 - Cache partage via CF Worker + D1, les scans profitent a tous
+//   0.2.0 - MVP : detection modo.php, affichage fond rouge + badge, cache local
+//   0.1.0 - Structure initiale
+// ---
 
 (function () {
   'use strict';

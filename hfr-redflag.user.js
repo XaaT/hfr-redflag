@@ -1,13 +1,14 @@
 // ==UserScript==
 // @name         HFR RedFlag
 // @namespace    https://github.com/XaaT/hfr-redflag
-// @version      0.2.0
+// @version      0.3.0
 // @description  Met en evidence les posts alertes a la moderation sur forum.hardware.fr
 // @author       xat
 // @match        https://forum.hardware.fr/forum2.php*
 // @match        https://forum.hardware.fr/hfr/*
 // @grant        GM_addStyle
 // @grant        GM_xmlhttpRequest
+// @connect      hfr-redflag.clement-665.workers.dev
 // @updateURL    https://raw.githubusercontent.com/XaaT/hfr-redflag/master/hfr-redflag.user.js
 // @downloadURL  https://raw.githubusercontent.com/XaaT/hfr-redflag/master/hfr-redflag.user.js
 // @license      MIT
@@ -17,20 +18,18 @@
   'use strict';
 
   var PREFIX = '[HFR RedFlag]';
+  var API_URL = 'https://hfr-redflag.clement-665.workers.dev';
+  var API_VERSION = '0.3.0';
 
   // --- Etape 1 : Extraction des donnees de la page ---
 
-  // Extraire cat et post depuis l'URL
   function parsePageUrl() {
     var params = new URLSearchParams(window.location.search);
-    // URL classique : forum2.php?config=hfr.inc&cat=13&post=18045&page=4321
     var cat = params.get('cat');
     var post = params.get('post');
     var page = params.get('page');
 
-    // URL rewritee : /hfr/Discussions/Viepratique/toulouse-sujet_18045_4322.htm
     if (!cat || !post) {
-      // On cherche les meta ou liens modo.php dans la page pour recuperer cat
       var modoLink = document.querySelector('a[href*="modo.php"]');
       if (modoLink) {
         var modoUrl = new URL(modoLink.href, window.location.origin);
@@ -41,8 +40,6 @@
       }
     }
 
-    // Dernier fallback pour les URLs rewritees : extraire depuis le path
-    // Format: /hfr/.../nom-sujet_POST_PAGE.htm
     if (!post) {
       var match = window.location.pathname.match(/sujet_(\d+)_(\d+)\.htm/);
       if (match) {
@@ -58,14 +55,11 @@
     };
   }
 
-  // Extraire les numreponse depuis la variable JS listenumreponse
   function extractNumreponses() {
-    // Methode 1 : lire la variable globale
     if (typeof listenumreponse !== 'undefined' && Array.isArray(listenumreponse)) {
       return listenumreponse.map(function (n) { return parseInt(n, 10); });
     }
 
-    // Methode 2 : parser les scripts de la page
     var scripts = document.querySelectorAll('script:not([src])');
     for (var i = 0; i < scripts.length; i++) {
       var text = scripts[i].textContent;
@@ -78,7 +72,6 @@
       }
     }
 
-    // Methode 3 : fallback DOM - scanner les ancres
     var anchors = document.querySelectorAll('td.messCase1 a[name^="t"]');
     var nums = [];
     anchors.forEach(function (a) {
@@ -88,9 +81,59 @@
     return nums;
   }
 
-  // --- Etape 2 : Detection via modo.php ---
+  // --- API Worker (cache Worker (shared)) ---
 
-  // Construire l'URL modo.php pour un post
+  function apiRequest(method, path, body) {
+    return new Promise(function (resolve) {
+      GM_xmlhttpRequest({
+        method: method,
+        url: API_URL + path,
+        headers: {
+          'X-HFR-RF-Version': API_VERSION,
+          'Content-Type': 'application/json'
+        },
+        data: body ? JSON.stringify(body) : undefined,
+        timeout: 5000,
+        onload: function (resp) {
+          if (resp.status === 200) {
+            try {
+              resolve(JSON.parse(resp.responseText));
+            } catch (e) {
+              console.warn(PREFIX, 'API: JSON invalide', resp.responseText.substring(0, 100));
+              resolve(null);
+            }
+          } else {
+            console.warn(PREFIX, 'API:', resp.status, path);
+            resolve(null);
+          }
+        },
+        onerror: function () {
+          console.warn(PREFIX, 'API: erreur reseau', path);
+          resolve(null);
+        },
+        ontimeout: function () {
+          console.warn(PREFIX, 'API: timeout', path);
+          resolve(null);
+        }
+      });
+    });
+  }
+
+  // Demander les statuts au Worker
+  function fetchRemoteStatuses(cat, ids) {
+    if (ids.length === 0) return Promise.resolve({});
+    return apiRequest('GET', '/check?cat=' + cat + '&ids=' + ids.join(','))
+      .then(function (data) { return data || {}; });
+  }
+
+  // Envoyer les resultats au Worker
+  function reportToWorker(results) {
+    if (results.length === 0) return Promise.resolve(null);
+    return apiRequest('POST', '/report', { results: results });
+  }
+
+  // --- Detection via modo.php ---
+
   function buildModoUrl(cat, post, numreponse) {
     return 'https://forum.hardware.fr/user/modo.php?config=hfr.inc'
       + '&cat=' + cat
@@ -99,8 +142,6 @@
       + '&page=1&ref=1';
   }
 
-  // Checker un post via modo.php, retourne une Promise
-  // Resolve: { numreponse, flagged: true/false } ou null si erreur
   function checkPost(cat, post, numreponse) {
     return new Promise(function (resolve) {
       var url = buildModoUrl(cat, post, numreponse);
@@ -110,20 +151,17 @@
       xhr.onload = function () {
         if (xhr.status === 200) {
           var html = xhr.responseText;
-          // Si la page contient un textarea -> formulaire d'alerte -> pas alerte
           var hasForm = html.indexOf('<textarea') !== -1
             || html.indexOf('Raison de la demande') !== -1;
           if (hasForm) {
             resolve({ numreponse: numreponse, flagged: false });
           } else {
-            // Verifier qu'on a bien un message de moderation et pas une erreur
             var hasModMsg = html.indexOf('modération') !== -1
               || html.indexOf('mod\u00e9ration') !== -1
               || html.indexOf('moderation') !== -1;
             if (hasModMsg) {
               resolve({ numreponse: numreponse, flagged: true });
             } else {
-              // Page inattendue (pas connecte, erreur, etc.)
               console.warn(PREFIX, 'Reponse inattendue pour', numreponse, html.substring(0, 200));
               resolve(null);
             }
@@ -145,7 +183,7 @@
     });
   }
 
-  // Queue throttlee : execute les checks avec un debit limite
+  // Queue throttlee
   function ThrottledQueue(delayMs) {
     this.delayMs = delayMs;
     this.queue = [];
@@ -175,9 +213,8 @@
     });
   };
 
-  // --- Etape 3 : Affichage visuel ---
+  // --- Affichage visuel ---
 
-  // Injecter le CSS
   function injectStyles() {
     GM_addStyle(
       'table.messagetable.hfr-redflag-flagged > tbody > tr.message {'
@@ -212,18 +249,12 @@
     );
   }
 
-  // Marquer un post comme alerte dans le DOM
   function markPostFlagged(numreponse) {
     var anchor = document.querySelector('a[name="t' + numreponse + '"]');
     if (!anchor) return;
-
-    // Remonter au table.messagetable
     var table = anchor.closest('table.messagetable');
     if (!table) return;
-
     table.classList.add('hfr-redflag-flagged');
-
-    // Ajouter le badge dans messCase1
     var cell = table.querySelector('td.messCase1');
     if (cell && !cell.querySelector('.hfr-redflag-badge')) {
       var badge = document.createElement('div');
@@ -233,11 +264,10 @@
     }
   }
 
-  // Widget de statut en bas a droite
   function createStatusWidget() {
     var el = document.createElement('div');
     el.className = 'hfr-redflag-status';
-    el.textContent = 'RedFlag: scan...';
+    el.textContent = 'RedFlag: chargement...';
     document.body.appendChild(el);
     return el;
   }
@@ -275,19 +305,15 @@
     }
   }
 
-  // Cle de cache : "cat:numreponse"
   function cacheKey(cat, numreponse) {
     return cat + ':' + numreponse;
   }
 
-  // Verifier si une entree de cache est encore fraiche
   function isCacheFresh(entry) {
     if (!entry) return false;
-    // Alerte = permanent
     if (entry.flagged) return true;
-    // Pas alerte = TTL de 1h
     var age = Date.now() - entry.checkedAt;
-    return age < 3600000; // 1h
+    return age < 3600000;
   }
 
   // --- Main ---
@@ -302,17 +328,20 @@
     }
 
     var numreponses = extractNumreponses();
-    console.log(PREFIX, numreponses.length, 'posts trouves:', numreponses);
+    console.log(PREFIX, numreponses.length, 'posts trouves');
 
     if (numreponses.length === 0) {
       console.log(PREFIX, 'Aucun post trouve, arret.');
       return;
     }
 
-    // Charger le cache
+    injectStyles();
+    var widget = createStatusWidget();
+
+    // Phase 1 : cache local
     var cache = loadCache();
-    var toCheck = [];
-    var alreadyFlagged = 0;
+    var toFetchRemote = [];
+    var flagged = 0;
 
     numreponses.forEach(function (num) {
       var key = cacheKey(pageInfo.cat, num);
@@ -320,65 +349,114 @@
       if (isCacheFresh(entry)) {
         if (entry.flagged) {
           markPostFlagged(num);
-          alreadyFlagged++;
+          flagged++;
         }
-        // Pas alerte + frais -> on skip
       } else {
-        toCheck.push(num);
+        toFetchRemote.push(num);
       }
     });
 
-    console.log(PREFIX, alreadyFlagged, 'posts alertes (cache),', toCheck.length, 'a verifier');
+    console.log(PREFIX, flagged, 'alertes (cache local),', toFetchRemote.length, 'a verifier');
 
-    if (toCheck.length === 0) {
-      console.log(PREFIX, 'Rien a verifier, tout est en cache.');
+    if (toFetchRemote.length === 0) {
+      widget.textContent = 'RedFlag: ' + flagged + ' alert\u00e9' + (flagged > 1 ? 's' : '');
+      removeStatusWidget(widget);
       return;
     }
 
-    // Injecter les styles
-    injectStyles();
+    // Phase 2 : cache Worker (shared) (partage)
+    widget.textContent = 'RedFlag: interrogation du cache...';
 
-    // Widget de statut
-    var widget = createStatusWidget();
-    var checked = 0;
-    var flagged = alreadyFlagged;
+    fetchRemoteStatuses(pageInfo.cat, toFetchRemote).then(function (remoteData) {
+      var toCheckModo = [];
 
-    // Queue throttlee : 1 requete toutes les 400ms (~2.5 req/s)
-    var queue = new ThrottledQueue(400);
-
-    // Lancer les checks
-    var promises = toCheck.map(function (num) {
-      return queue.add(function () {
-        return checkPost(pageInfo.cat, pageInfo.post, num).then(function (result) {
-          checked++;
-          if (result) {
-            var key = cacheKey(pageInfo.cat, num);
-            cache[key] = {
-              flagged: result.flagged,
-              checkedAt: Date.now()
-            };
-            if (result.flagged) {
-              flagged++;
-              markPostFlagged(num);
-              console.log(PREFIX, 'ALERTE:', num);
-            }
+      toFetchRemote.forEach(function (num) {
+        var remote = remoteData[num] || remoteData[String(num)];
+        if (remote) {
+          // Le Worker connait ce post
+          var key = cacheKey(pageInfo.cat, num);
+          cache[key] = {
+            flagged: remote.flagged,
+            checkedAt: new Date(remote.checkedAt).getTime()
+          };
+          if (remote.flagged) {
+            markPostFlagged(num);
+            flagged++;
+          } else if (isCacheFresh(cache[key])) {
+            // Pas alerte + frais dans le Worker -> on skip
+          } else {
+            toCheckModo.push(num);
           }
-          updateStatusWidget(widget, checked, flagged, toCheck.length);
+        } else {
+          // Inconnu du Worker
+          toCheckModo.push(num);
+        }
+      });
+
+      console.log(PREFIX, flagged, 'alertes apres cache Worker (shared),', toCheckModo.length, 'a scanner via modo.php');
+
+      if (toCheckModo.length === 0) {
+        widget.textContent = 'RedFlag: ' + flagged + ' alert\u00e9' + (flagged > 1 ? 's' : '');
+        saveCache(cache);
+        removeStatusWidget(widget);
+        return;
+      }
+
+      // Phase 3 : scan modo.php pour les posts inconnus
+      widget.textContent = 'RedFlag: scan modo.php...';
+      var queue = new ThrottledQueue(400);
+      var checked = 0;
+      var scanResults = [];
+
+      var promises = toCheckModo.map(function (num) {
+        return queue.add(function () {
+          return checkPost(pageInfo.cat, pageInfo.post, num).then(function (result) {
+            checked++;
+            if (result) {
+              var key = cacheKey(pageInfo.cat, num);
+              cache[key] = {
+                flagged: result.flagged,
+                checkedAt: Date.now()
+              };
+              scanResults.push({
+                cat: pageInfo.cat,
+                post: pageInfo.post,
+                numreponse: num,
+                flagged: result.flagged
+              });
+              if (result.flagged) {
+                flagged++;
+                markPostFlagged(num);
+                console.log(PREFIX, 'ALERTE:', num);
+              }
+            }
+            updateStatusWidget(widget, checked, flagged, toCheckModo.length);
+          });
         });
       });
-    });
 
-    Promise.all(promises).then(function () {
-      saveCache(cache);
-      console.log(PREFIX, 'Scan termine.', flagged, 'alertes sur', numreponses.length, 'posts.');
-      if (flagged === alreadyFlagged) {
-        widget.textContent = 'RedFlag: aucune alerte';
-      }
-      removeStatusWidget(widget);
+      Promise.all(promises).then(function () {
+        saveCache(cache);
+
+        // Phase 4 : remonter les resultats au Worker
+        if (scanResults.length > 0) {
+          console.log(PREFIX, 'Report au Worker:', scanResults.length, 'resultats');
+          reportToWorker(scanResults).then(function (resp) {
+            if (resp && resp.ok) {
+              console.log(PREFIX, 'Worker: report OK,', resp.updated, 'mis a jour');
+            }
+          });
+        }
+
+        console.log(PREFIX, 'Scan termine.', flagged, 'alertes sur', numreponses.length, 'posts.');
+        if (flagged === 0) {
+          widget.textContent = 'RedFlag: aucune alerte';
+        }
+        removeStatusWidget(widget);
+      });
     });
   }
 
-  // Attendre que le DOM soit pret
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', main);
   } else {

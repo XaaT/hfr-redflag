@@ -1,0 +1,8 @@
+name = "hfr-redflag"
+main = "src/index.js"
+compatibility_date = "2026-03-21"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "hfr-redflag"
+database_id = "324e0928-14cf-41ff-8928-848cf97fa480"

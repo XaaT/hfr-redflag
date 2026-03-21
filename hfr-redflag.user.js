@@ -8,6 +8,8 @@
 // @match        https://forum.hardware.fr/hfr/*
 // @grant        GM_addStyle
 // @grant        GM_xmlhttpRequest
+// @updateURL    https://raw.githubusercontent.com/XaaT/hfr-redflag/master/hfr-redflag.user.js
+// @downloadURL  https://raw.githubusercontent.com/XaaT/hfr-redflag/master/hfr-redflag.user.js
 // @license      MIT
 // ==/UserScript==
 

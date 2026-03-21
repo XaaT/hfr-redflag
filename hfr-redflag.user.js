@@ -484,6 +484,17 @@
 
     console.log(PREFIX, flagged, 'alertes (cache local),', toFetchRemote.length, 'a verifier');
 
+    // Vider la queue des reports echoues si le circuit est ferme
+    var pendingReports = loadFailedReports();
+    if (pendingReports.length > 0 && !isCircuitOpen()) {
+      console.log(PREFIX, 'Retry de', pendingReports.length, 'reports en queue');
+      reportToWorker([]).then(function (resp) {
+        if (resp && resp.ok) {
+          console.log(PREFIX, 'Queue videe:', resp.updated, 'reports envoyes');
+        }
+      });
+    }
+
     if (toFetchRemote.length === 0) {
       widget.textContent = 'RedFlag: ' + flagged + ' alert\u00e9' + (flagged > 1 ? 's' : '');
       removeStatusWidget(widget);

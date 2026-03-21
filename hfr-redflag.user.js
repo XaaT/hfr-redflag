@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         HFR RedFlag
 // @namespace    https://github.com/XaaT/hfr-redflag
-// @version      0.4.2
+// @version      0.5.0
 // @description  Met en evidence les posts alertes a la moderation sur forum.hardware.fr
 // @author       xat
 // @match        https://forum.hardware.fr/forum2.php*
@@ -16,6 +16,7 @@
 // @license      MIT
 // ==/UserScript==
 // --- Changelog ---
+//   0.5.0 - Refactoring : config centralisee, nettoyage cache, code structure
 //   0.4.2 - Retrait logs debug
 //   0.4.1 - Fix retry queue vide + logs debug temporaires
 //   0.4.0 - Circuit breaker + retry queue si le Worker est down
@@ -28,102 +29,168 @@
 (function () {
   'use strict';
 
-  // --- Shims de compatibilite Greasemonkey v4 ---
-  // GM4 utilise GM.xmlHttpRequest (promise-based) au lieu de GM_xmlhttpRequest (callback)
+  // =====================================================================
+  // CONFIG
+  // =====================================================================
+
+  var CONFIG = {
+    // API Worker
+    apiUrl: 'https://hfr-redflag.clement-665.workers.dev',
+    apiVersion: '0.5.0',
+    apiTimeout: 5000,            // ms
+
+    // Throttle modo.php
+    throttleDelay: 200,          // ms entre chaque requete (~5 req/s)
+    modoTimeout: 10000,          // ms
+
+    // Cache local (localStorage)
+    cacheKey: 'hfr_redflag_cache',
+    cacheTtl: 3600000,           // 1h pour les "pas alerte"
+    cacheMaxEntries: 50000,      // nettoyage au-dela
+
+    // Circuit breaker
+    cbKey: 'hfr_redflag_circuit',
+    cbThreshold: 3,              // erreurs consecutives avant ouverture
+    cbBaseDelay: 300000,         // 5 min
+    cbMaxDelay: 1800000,         // 30 min
+
+    // Retry queue
+    retryKey: 'hfr_redflag_failed_reports',
+    retryMaxItems: 500
+  };
+
+  var PREFIX = '[HFR RedFlag]';
+
+  // =====================================================================
+  // SHIMS GREASEMONKEY V4
+  // =====================================================================
+
   if (typeof GM_xmlhttpRequest === 'undefined') {
     if (typeof GM !== 'undefined' && GM.xmlHttpRequest) {
       GM_xmlhttpRequest = function (opts) { return GM.xmlHttpRequest(opts); };
     }
   }
-  // GM_addStyle n'existe pas dans GM4
   if (typeof GM_addStyle === 'undefined') {
     if (typeof GM !== 'undefined' && GM.addStyle) {
       GM_addStyle = function (css) { return GM.addStyle(css); };
     } else {
       GM_addStyle = function (css) {
-        var style = document.createElement('style');
-        style.textContent = css;
-        document.head.appendChild(style);
-        return style;
+        var s = document.createElement('style');
+        s.textContent = css;
+        document.head.appendChild(s);
+        return s;
       };
     }
   }
 
-  var PREFIX = '[HFR RedFlag]';
-  var API_URL = 'https://hfr-redflag.clement-665.workers.dev';
-  var API_VERSION = '0.4.0';
+  // =====================================================================
+  // LOCALSTORAGE HELPERS
+  // =====================================================================
 
-  // --- Circuit breaker pour le Worker ---
-  // Evite de retenter le Worker s'il est down
-  var CB_KEY = 'hfr_redflag_circuit';
-  var CB_THRESHOLD = 3;       // erreurs consecutives avant ouverture
-  var CB_BASE_DELAY = 300000; // 5 min en ms
-  var CB_MAX_DELAY = 1800000; // 30 min max
-
-  function loadCircuitBreaker() {
-    try {
-      return JSON.parse(localStorage.getItem(CB_KEY)) || { failures: 0, openUntil: 0 };
-    } catch (e) {
-      return { failures: 0, openUntil: 0 };
-    }
+  function lsGet(key, fallback) {
+    try { return JSON.parse(localStorage.getItem(key)) || fallback; }
+    catch (e) { return fallback; }
   }
 
-  function saveCircuitBreaker(cb) {
-    try {
-      localStorage.setItem(CB_KEY, JSON.stringify(cb));
-    } catch (e) {}
+  function lsSet(key, value) {
+    try { localStorage.setItem(key, JSON.stringify(value)); }
+    catch (e) {}
   }
+
+  function lsRemove(key) {
+    try { localStorage.removeItem(key); }
+    catch (e) {}
+  }
+
+  // =====================================================================
+  // CIRCUIT BREAKER
+  // =====================================================================
 
   function isCircuitOpen() {
-    var cb = loadCircuitBreaker();
-    if (cb.failures < CB_THRESHOLD) return false;
-    if (Date.now() >= cb.openUntil) {
-      // Delai expire, on tente un retry (half-open)
-      return false;
-    }
-    return true;
+    var cb = lsGet(CONFIG.cbKey, { failures: 0, openUntil: 0 });
+    if (cb.failures < CONFIG.cbThreshold) return false;
+    return Date.now() < cb.openUntil;
   }
 
   function recordApiSuccess() {
-    saveCircuitBreaker({ failures: 0, openUntil: 0 });
+    lsSet(CONFIG.cbKey, { failures: 0, openUntil: 0 });
   }
 
   function recordApiFailure() {
-    var cb = loadCircuitBreaker();
+    var cb = lsGet(CONFIG.cbKey, { failures: 0, openUntil: 0 });
     cb.failures++;
-    if (cb.failures >= CB_THRESHOLD) {
-      // Backoff exponentiel : 5min, 10min, 20min, 30min max
-      var delay = Math.min(CB_BASE_DELAY * Math.pow(2, cb.failures - CB_THRESHOLD), CB_MAX_DELAY);
+    if (cb.failures >= CONFIG.cbThreshold) {
+      var delay = Math.min(
+        CONFIG.cbBaseDelay * Math.pow(2, cb.failures - CONFIG.cbThreshold),
+        CONFIG.cbMaxDelay
+      );
       cb.openUntil = Date.now() + delay;
       console.warn(PREFIX, 'Circuit breaker ouvert, retry dans', Math.round(delay / 60000), 'min');
     }
-    saveCircuitBreaker(cb);
+    lsSet(CONFIG.cbKey, cb);
   }
 
-  // Queue des reports echoues
-  var FAILED_REPORTS_KEY = 'hfr_redflag_failed_reports';
+  // =====================================================================
+  // RETRY QUEUE
+  // =====================================================================
 
-  function loadFailedReports() {
-    try {
-      return JSON.parse(localStorage.getItem(FAILED_REPORTS_KEY)) || [];
-    } catch (e) {
-      return [];
-    }
+  function loadRetryQueue() {
+    return lsGet(CONFIG.retryKey, []);
   }
 
-  function saveFailedReports(reports) {
-    try {
-      // Garder max 500 reports en queue
-      if (reports.length > 500) reports = reports.slice(-500);
-      localStorage.setItem(FAILED_REPORTS_KEY, JSON.stringify(reports));
-    } catch (e) {}
+  function saveRetryQueue(items) {
+    if (items.length > CONFIG.retryMaxItems) items = items.slice(-CONFIG.retryMaxItems);
+    lsSet(CONFIG.retryKey, items);
   }
 
-  function clearFailedReports() {
-    try { localStorage.removeItem(FAILED_REPORTS_KEY); } catch (e) {}
+  function clearRetryQueue() {
+    lsRemove(CONFIG.retryKey);
   }
 
-  // --- Etape 1 : Extraction des donnees de la page ---
+  // =====================================================================
+  // CACHE LOCAL
+  // =====================================================================
+
+  function loadCache() {
+    return lsGet(CONFIG.cacheKey, {});
+  }
+
+  function saveCache(cache) {
+    lsSet(CONFIG.cacheKey, cache);
+  }
+
+  function makeCacheKey(cat, numreponse) {
+    return cat + ':' + numreponse;
+  }
+
+  function isCacheFresh(entry) {
+    if (!entry) return false;
+    if (entry.flagged) return true;
+    return (Date.now() - entry.checkedAt) < CONFIG.cacheTtl;
+  }
+
+  // Nettoyer les entrees perimees pour eviter la croissance infinie
+  function pruneCache(cache) {
+    var keys = Object.keys(cache);
+    if (keys.length <= CONFIG.cacheMaxEntries) return cache;
+
+    console.log(PREFIX, 'Nettoyage cache:', keys.length, 'entrees');
+    var pruned = {};
+    var now = Date.now();
+    keys.forEach(function (key) {
+      var entry = cache[key];
+      // Garder les flagged (permanents) et les frais
+      if (entry.flagged || (now - entry.checkedAt) < CONFIG.cacheTtl) {
+        pruned[key] = entry;
+      }
+    });
+    console.log(PREFIX, 'Cache apres nettoyage:', Object.keys(pruned).length, 'entrees');
+    return pruned;
+  }
+
+  // =====================================================================
+  // EXTRACTION DOM / URL
+  // =====================================================================
 
   function parsePageUrl() {
     var params = new URLSearchParams(window.location.search);
@@ -131,23 +198,21 @@
     var post = params.get('post');
     var page = params.get('page');
 
+    // Fallback : liens modo.php dans la page (URLs rewritees)
     if (!cat || !post) {
-      var modoLink = document.querySelector('a[href*="modo.php"]');
-      if (modoLink) {
-        var modoUrl = new URL(modoLink.href, window.location.origin);
-        var modoParams = new URLSearchParams(modoUrl.search);
-        cat = cat || modoParams.get('cat');
-        post = post || modoParams.get('post');
-        page = page || modoParams.get('page');
+      var link = document.querySelector('a[href*="modo.php"]');
+      if (link) {
+        var p = new URLSearchParams(new URL(link.href, location.origin).search);
+        cat = cat || p.get('cat');
+        post = post || p.get('post');
+        page = page || p.get('page');
       }
     }
 
+    // Fallback : pattern URL rewritee /hfr/.../nom-sujet_POST_PAGE.htm
     if (!post) {
-      var match = window.location.pathname.match(/sujet_(\d+)_(\d+)\.htm/);
-      if (match) {
-        post = match[1];
-        page = match[2];
-      }
+      var match = location.pathname.match(/sujet_(\d+)_(\d+)\.htm/);
+      if (match) { post = match[1]; page = match[2]; }
     }
 
     return {
@@ -158,59 +223,56 @@
   }
 
   function extractNumreponses() {
+    // Source 1 : variable globale
     if (typeof listenumreponse !== 'undefined' && Array.isArray(listenumreponse)) {
       return listenumreponse.map(function (n) { return parseInt(n, 10); });
     }
 
+    // Source 2 : parser les scripts inline
     var scripts = document.querySelectorAll('script:not([src])');
     for (var i = 0; i < scripts.length; i++) {
-      var text = scripts[i].textContent;
-      var match = text.match(/listenumreponse\s*=\s*new\s+Array\(([^)]+)\)/);
+      var match = scripts[i].textContent.match(/listenumreponse\s*=\s*new\s+Array\(([^)]+)\)/);
       if (match) {
-        return match[1]
-          .split(',')
+        return match[1].split(',')
           .map(function (s) { return parseInt(s.replace(/["\s]/g, ''), 10); })
           .filter(function (n) { return !isNaN(n); });
       }
     }
 
-    var anchors = document.querySelectorAll('td.messCase1 a[name^="t"]');
+    // Source 3 : fallback DOM
     var nums = [];
-    anchors.forEach(function (a) {
-      var num = parseInt(a.name.substring(1), 10);
-      if (!isNaN(num)) nums.push(num);
+    document.querySelectorAll('td.messCase1 a[name^="t"]').forEach(function (a) {
+      var n = parseInt(a.name.substring(1), 10);
+      if (!isNaN(n)) nums.push(n);
     });
     return nums;
   }
 
-  // --- API Worker (cache Worker (shared)) ---
+  // =====================================================================
+  // API WORKER
+  // =====================================================================
 
   function apiRequest(method, path, body) {
-    // Circuit breaker : skip si ouvert
     if (isCircuitOpen()) {
-      console.log(PREFIX, 'API: circuit breaker ouvert, skip', path);
+      console.log(PREFIX, 'Circuit breaker ouvert, skip', path);
       return Promise.resolve(null);
     }
 
     return new Promise(function (resolve) {
       GM_xmlhttpRequest({
         method: method,
-        url: API_URL + path,
+        url: CONFIG.apiUrl + path,
         headers: {
-          'X-HFR-RF-Version': API_VERSION,
+          'X-HFR-RF-Version': CONFIG.apiVersion,
           'Content-Type': 'application/json'
         },
         data: body ? JSON.stringify(body) : undefined,
-        timeout: 5000,
+        timeout: CONFIG.apiTimeout,
         onload: function (resp) {
           if (resp.status === 200) {
             recordApiSuccess();
-            try {
-              resolve(JSON.parse(resp.responseText));
-            } catch (e) {
-              console.warn(PREFIX, 'API: JSON invalide', resp.responseText.substring(0, 100));
-              resolve(null);
-            }
+            try { resolve(JSON.parse(resp.responseText)); }
+            catch (e) { resolve(null); }
           } else {
             console.warn(PREFIX, 'API:', resp.status, path);
             recordApiFailure();
@@ -231,87 +293,74 @@
     });
   }
 
-  // Demander les statuts au Worker
   function fetchRemoteStatuses(cat, ids) {
     if (ids.length === 0) return Promise.resolve({});
     return apiRequest('GET', '/check?cat=' + cat + '&ids=' + ids.join(','))
       .then(function (data) { return data || {}; });
   }
 
-  // Envoyer les resultats au Worker (avec retry des echoues)
   function reportToWorker(results) {
-    // Ajouter les reports precedemment echoues
-    var failed = loadFailedReports();
-    var allResults = failed.concat(results);
+    var queued = loadRetryQueue();
+    var all = queued.concat(results);
+    if (all.length === 0) return Promise.resolve(null);
 
-    if (allResults.length === 0) return Promise.resolve(null);
-
-    return apiRequest('POST', '/report', { results: allResults }).then(function (resp) {
+    return apiRequest('POST', '/report', { results: all }).then(function (resp) {
       if (resp && resp.ok) {
-        // Succes : vider la queue
-        clearFailedReports();
+        clearRetryQueue();
         return resp;
       } else {
-        // Echec : sauvegarder tout pour retry
-        saveFailedReports(allResults);
-        console.warn(PREFIX, 'Report echoue,', allResults.length, 'resultats en queue pour retry');
+        saveRetryQueue(all);
+        console.warn(PREFIX, 'Report echoue,', all.length, 'en queue pour retry');
         return null;
       }
     });
   }
 
-  // --- Detection via modo.php ---
+  // =====================================================================
+  // DETECTION MODO.PHP
+  // =====================================================================
 
   function buildModoUrl(cat, post, numreponse) {
     return 'https://forum.hardware.fr/user/modo.php?config=hfr.inc'
-      + '&cat=' + cat
-      + '&post=' + post
-      + '&numreponse=' + numreponse
-      + '&page=1&ref=1';
+      + '&cat=' + cat + '&post=' + post
+      + '&numreponse=' + numreponse + '&page=1&ref=1';
   }
 
   function checkPost(cat, post, numreponse) {
     return new Promise(function (resolve) {
-      var url = buildModoUrl(cat, post, numreponse);
       var xhr = new XMLHttpRequest();
-      xhr.open('GET', url, true);
-      xhr.timeout = 10000;
+      xhr.open('GET', buildModoUrl(cat, post, numreponse), true);
+      xhr.timeout = CONFIG.modoTimeout;
+
       xhr.onload = function () {
-        if (xhr.status === 200) {
-          var html = xhr.responseText;
-          var hasForm = html.indexOf('<textarea') !== -1
-            || html.indexOf('Raison de la demande') !== -1;
-          if (hasForm) {
-            resolve({ numreponse: numreponse, flagged: false });
-          } else {
-            var hasModMsg = html.indexOf('modération') !== -1
-              || html.indexOf('mod\u00e9ration') !== -1
-              || html.indexOf('moderation') !== -1;
-            if (hasModMsg) {
-              resolve({ numreponse: numreponse, flagged: true });
-            } else {
-              console.warn(PREFIX, 'Reponse inattendue pour', numreponse, html.substring(0, 200));
-              resolve(null);
-            }
-          }
-        } else {
+        if (xhr.status !== 200) {
           console.warn(PREFIX, 'HTTP', xhr.status, 'pour', numreponse);
-          resolve(null);
+          return resolve(null);
         }
-      };
-      xhr.onerror = function () {
-        console.warn(PREFIX, 'Erreur reseau pour', numreponse);
+        var html = xhr.responseText;
+        // Formulaire d'alerte present = pas alerte
+        if (html.indexOf('<textarea') !== -1 || html.indexOf('Raison de la demande') !== -1) {
+          return resolve({ numreponse: numreponse, flagged: false });
+        }
+        // Message de moderation = alerte
+        if (html.indexOf('mod\u00e9ration') !== -1 || html.indexOf('moderation') !== -1) {
+          return resolve({ numreponse: numreponse, flagged: true });
+        }
+        // Reponse inattendue
+        console.warn(PREFIX, 'Reponse inattendue pour', numreponse);
         resolve(null);
       };
-      xhr.ontimeout = function () {
-        console.warn(PREFIX, 'Timeout pour', numreponse);
-        resolve(null);
-      };
+
+      xhr.onerror = function () { resolve(null); };
+      xhr.ontimeout = function () { resolve(null); };
       xhr.send();
     });
   }
 
-  // Queue throttlee
+  // =====================================================================
+  // THROTTLED QUEUE
+  // =====================================================================
+
   function ThrottledQueue(delayMs) {
     this.delayMs = delayMs;
     this.queue = [];
@@ -321,61 +370,40 @@
   ThrottledQueue.prototype.add = function (fn) {
     var self = this;
     return new Promise(function (resolve, reject) {
-      self.queue.push(function () {
-        return fn().then(resolve, reject);
-      });
+      self.queue.push(function () { return fn().then(resolve, reject); });
       if (!self.running) self._run();
     });
   };
 
   ThrottledQueue.prototype._run = function () {
     var self = this;
-    if (self.queue.length === 0) {
-      self.running = false;
-      return;
-    }
+    if (self.queue.length === 0) { self.running = false; return; }
     self.running = true;
-    var task = self.queue.shift();
-    task().finally(function () {
+    self.queue.shift()().finally(function () {
       setTimeout(function () { self._run(); }, self.delayMs);
     });
   };
 
-  // --- Affichage visuel ---
+  // =====================================================================
+  // AFFICHAGE
+  // =====================================================================
 
-  function injectStyles() {
-    GM_addStyle(
-      'table.messagetable.hfr-redflag-flagged > tbody > tr.message {'
-      + '  background-color: #ffcccc !important;'
-      + '}'
-      + 'table.messagetable.hfr-redflag-flagged td.messCase1,'
-      + 'table.messagetable.hfr-redflag-flagged td.messCase2 {'
-      + '  background-color: #ffcccc !important;'
-      + '}'
-      + '.hfr-redflag-badge {'
-      + '  display: inline-block;'
-      + '  background: #cc0000;'
-      + '  color: white;'
-      + '  font-size: 10px;'
-      + '  font-weight: bold;'
-      + '  padding: 1px 5px;'
-      + '  border-radius: 3px;'
-      + '  margin-top: 4px;'
-      + '}'
-      + '.hfr-redflag-status {'
-      + '  position: fixed;'
-      + '  bottom: 8px;'
-      + '  right: 8px;'
-      + '  background: rgba(0,0,0,0.7);'
-      + '  color: white;'
-      + '  font-size: 11px;'
-      + '  padding: 4px 10px;'
-      + '  border-radius: 4px;'
-      + '  z-index: 99999;'
-      + '  font-family: sans-serif;'
-      + '}'
-    );
-  }
+  var CSS = ''
+    + 'table.messagetable.hfr-redflag-flagged > tbody > tr.message,'
+    + 'table.messagetable.hfr-redflag-flagged td.messCase1,'
+    + 'table.messagetable.hfr-redflag-flagged td.messCase2'
+    + '{ background-color: #ffcccc !important; }'
+    + '.hfr-redflag-badge {'
+    + '  display: inline-block; background: #cc0000; color: white;'
+    + '  font-size: 10px; font-weight: bold; padding: 1px 5px;'
+    + '  border-radius: 3px; margin-top: 4px;'
+    + '}'
+    + '.hfr-redflag-status {'
+    + '  position: fixed; bottom: 8px; right: 8px;'
+    + '  background: rgba(0,0,0,0.7); color: white;'
+    + '  font-size: 11px; padding: 4px 10px; border-radius: 4px;'
+    + '  z-index: 99999; font-family: sans-serif;'
+    + '}';
 
   function markPostFlagged(numreponse) {
     var anchor = document.querySelector('a[name="t' + numreponse + '"]');
@@ -392,7 +420,9 @@
     }
   }
 
-  function createStatusWidget() {
+  // --- Widget de statut ---
+
+  function createWidget() {
     var el = document.createElement('div');
     el.className = 'hfr-redflag-status';
     el.textContent = 'RedFlag: chargement...';
@@ -400,12 +430,12 @@
     return el;
   }
 
-  function updateStatusWidget(el, checked, flagged, total) {
+  function updateWidget(el, checked, flagged, total) {
     el.textContent = 'RedFlag: ' + checked + '/' + total
       + ' (' + flagged + ' alert\u00e9' + (flagged > 1 ? 's' : '') + ')';
   }
 
-  function removeStatusWidget(el) {
+  function dismissWidget(el) {
     setTimeout(function () {
       el.style.transition = 'opacity 0.5s';
       el.style.opacity = '0';
@@ -413,163 +443,98 @@
     }, 3000);
   }
 
-  // --- localStorage cache ---
-
-  var CACHE_KEY = 'hfr_redflag_cache';
-
-  function loadCache() {
-    try {
-      return JSON.parse(localStorage.getItem(CACHE_KEY)) || {};
-    } catch (e) {
-      return {};
-    }
-  }
-
-  function saveCache(cache) {
-    try {
-      localStorage.setItem(CACHE_KEY, JSON.stringify(cache));
-    } catch (e) {
-      console.warn(PREFIX, 'Erreur sauvegarde cache', e);
-    }
-  }
-
-  function cacheKey(cat, numreponse) {
-    return cat + ':' + numreponse;
-  }
-
-  function isCacheFresh(entry) {
-    if (!entry) return false;
-    if (entry.flagged) return true;
-    var age = Date.now() - entry.checkedAt;
-    return age < 3600000;
-  }
-
-  // --- Main ---
+  // =====================================================================
+  // MAIN
+  // =====================================================================
 
   function main() {
-    var pageInfo = parsePageUrl();
-    console.log(PREFIX, 'Page info:', pageInfo);
+    var page = parsePageUrl();
+    console.log(PREFIX, 'Page:', page);
 
-    if (!pageInfo.cat || !pageInfo.post) {
-      console.log(PREFIX, 'Pas une page de topic, arret.');
-      return;
-    }
+    if (!page.cat || !page.post) return;
 
     var numreponses = extractNumreponses();
-    console.log(PREFIX, numreponses.length, 'posts trouves');
+    console.log(PREFIX, numreponses.length, 'posts');
+    if (numreponses.length === 0) return;
 
-    if (numreponses.length === 0) {
-      console.log(PREFIX, 'Aucun post trouve, arret.');
-      return;
-    }
-
-    injectStyles();
-    var widget = createStatusWidget();
+    GM_addStyle(CSS);
+    var widget = createWidget();
 
     // Phase 1 : cache local
-    var cache = loadCache();
-    var toFetchRemote = [];
+    var cache = pruneCache(loadCache());
+    var toFetch = [];
     var flagged = 0;
 
     numreponses.forEach(function (num) {
-      var key = cacheKey(pageInfo.cat, num);
-      var entry = cache[key];
+      var entry = cache[makeCacheKey(page.cat, num)];
       if (isCacheFresh(entry)) {
-        if (entry.flagged) {
-          markPostFlagged(num);
-          flagged++;
-        }
+        if (entry.flagged) { markPostFlagged(num); flagged++; }
       } else {
-        toFetchRemote.push(num);
+        toFetch.push(num);
       }
     });
 
-    console.log(PREFIX, flagged, 'alertes (cache local),', toFetchRemote.length, 'a verifier');
+    console.log(PREFIX, flagged, 'alertes (cache local),', toFetch.length, 'a verifier');
 
-    // Vider la queue des reports echoues si le circuit est ferme
-    var pendingReports = loadFailedReports();
-    if (pendingReports.length > 0 && !isCircuitOpen()) {
-      console.log(PREFIX, 'Retry de', pendingReports.length, 'reports en queue');
+    // Retry queue au demarrage
+    var pending = loadRetryQueue();
+    if (pending.length > 0 && !isCircuitOpen()) {
+      console.log(PREFIX, 'Retry de', pending.length, 'reports en queue');
       reportToWorker([]).then(function (resp) {
-        if (resp && resp.ok) {
-          console.log(PREFIX, 'Queue videe:', resp.updated, 'reports envoyes');
-        }
+        if (resp && resp.ok) console.log(PREFIX, 'Queue videe:', resp.updated, 'envoyes');
       });
     }
 
-    if (toFetchRemote.length === 0) {
+    if (toFetch.length === 0) {
       widget.textContent = 'RedFlag: ' + flagged + ' alert\u00e9' + (flagged > 1 ? 's' : '');
-      removeStatusWidget(widget);
+      dismissWidget(widget);
+      saveCache(cache);
       return;
     }
 
-    // Phase 2 : cache Worker (shared) (partage)
+    // Phase 2 : cache Worker (shared)
     widget.textContent = 'RedFlag: interrogation du cache...';
 
-    fetchRemoteStatuses(pageInfo.cat, toFetchRemote).then(function (remoteData) {
-      var toCheckModo = [];
+    fetchRemoteStatuses(page.cat, toFetch).then(function (remote) {
+      var toScan = [];
 
-      toFetchRemote.forEach(function (num) {
-        var remote = remoteData[num] || remoteData[String(num)];
-        if (remote) {
-          // Le Worker connait ce post
-          var key = cacheKey(pageInfo.cat, num);
-          cache[key] = {
-            flagged: remote.flagged,
-            checkedAt: new Date(remote.checkedAt).getTime()
-          };
-          if (remote.flagged) {
-            markPostFlagged(num);
-            flagged++;
-          } else if (isCacheFresh(cache[key])) {
-            // Pas alerte + frais dans le Worker -> on skip
-          } else {
-            toCheckModo.push(num);
-          }
+      toFetch.forEach(function (num) {
+        var r = remote[num] || remote[String(num)];
+        if (r) {
+          var key = makeCacheKey(page.cat, num);
+          cache[key] = { flagged: r.flagged, checkedAt: new Date(r.checkedAt).getTime() };
+          if (r.flagged) { markPostFlagged(num); flagged++; }
+          else if (!isCacheFresh(cache[key])) toScan.push(num);
         } else {
-          // Inconnu du Worker
-          toCheckModo.push(num);
+          toScan.push(num);
         }
       });
 
-      console.log(PREFIX, flagged, 'alertes apres cache Worker (shared),', toCheckModo.length, 'a scanner via modo.php');
+      console.log(PREFIX, flagged, 'alertes apres cache Worker (shared),', toScan.length, 'a scanner');
 
-      if (toCheckModo.length === 0) {
+      if (toScan.length === 0) {
         widget.textContent = 'RedFlag: ' + flagged + ' alert\u00e9' + (flagged > 1 ? 's' : '');
         saveCache(cache);
-        removeStatusWidget(widget);
+        dismissWidget(widget);
         return;
       }
 
-      // Phase 3 : scan modo.php pour les posts inconnus
+      // Phase 3 : scan modo.php
       widget.textContent = 'RedFlag: scan modo.php...';
-      var queue = new ThrottledQueue(200);
+      var queue = new ThrottledQueue(CONFIG.throttleDelay);
       var checked = 0;
-      var scanResults = [];
+      var results = [];
 
-      var promises = toCheckModo.map(function (num) {
+      var promises = toScan.map(function (num) {
         return queue.add(function () {
-          return checkPost(pageInfo.cat, pageInfo.post, num).then(function (result) {
+          return checkPost(page.cat, page.post, num).then(function (r) {
             checked++;
-            if (result) {
-              var key = cacheKey(pageInfo.cat, num);
-              cache[key] = {
-                flagged: result.flagged,
-                checkedAt: Date.now()
-              };
-              scanResults.push({
-                cat: pageInfo.cat,
-                post: pageInfo.post,
-                numreponse: num,
-                flagged: result.flagged
-              });
-              if (result.flagged) {
-                flagged++;
-                markPostFlagged(num);
-                console.log(PREFIX, 'ALERTE:', num);
-              }
+            if (r) {
+              cache[makeCacheKey(page.cat, num)] = { flagged: r.flagged, checkedAt: Date.now() };
+              results.push({ cat: page.cat, post: page.post, numreponse: num, flagged: r.flagged });
+              if (r.flagged) { flagged++; markPostFlagged(num); console.log(PREFIX, 'ALERTE:', num); }
             }
-            updateStatusWidget(widget, checked, flagged, toCheckModo.length);
+            updateWidget(widget, checked, flagged, toScan.length);
           });
         });
       });
@@ -577,21 +542,17 @@
       Promise.all(promises).then(function () {
         saveCache(cache);
 
-        // Phase 4 : remonter les resultats au Worker
-        if (scanResults.length > 0) {
-          console.log(PREFIX, 'Report au Worker:', scanResults.length, 'resultats');
-          reportToWorker(scanResults).then(function (resp) {
-            if (resp && resp.ok) {
-              console.log(PREFIX, 'Worker: report OK,', resp.updated, 'mis a jour');
-            }
+        // Phase 4 : report au Worker
+        if (results.length > 0) {
+          console.log(PREFIX, 'Report:', results.length, 'resultats');
+          reportToWorker(results).then(function (resp) {
+            if (resp && resp.ok) console.log(PREFIX, 'Worker OK:', resp.updated, 'mis a jour');
           });
         }
 
-        console.log(PREFIX, 'Scan termine.', flagged, 'alertes sur', numreponses.length, 'posts.');
-        if (flagged === 0) {
-          widget.textContent = 'RedFlag: aucune alerte';
-        }
-        removeStatusWidget(widget);
+        console.log(PREFIX, 'Termine.', flagged, 'alertes sur', numreponses.length, 'posts');
+        if (flagged === 0) widget.textContent = 'RedFlag: aucune alerte';
+        dismissWidget(widget);
       });
     });
   }

@@ -1,192 +1,179 @@
 // HFR RedFlag — Cloudflare Worker + D1
 // Cache partage des statuts d'alerte des posts HFR
+//
+// Endpoints :
+//   GET  /check?cat={cat}&ids={id1,id2,...}  — statuts connus
+//   POST /report                              — batch upsert (anti-rollback)
+//   GET  /topic?cat={cat}&post={post}         — tous les flagged d'un topic
+//   GET  /stats                               — metriques globales
+//
+// Securite :
+//   - Header X-HFR-RF-Version obligatoire
+//   - Max 100 items par requete
+//   - Un POST ne peut pas passer flagged=true -> flagged=false
 
 var REQUIRED_HEADER = 'X-HFR-RF-Version';
+var MAX_ITEMS = 100;
 
-// --- CORS ---
+// =====================================================================
+// CORS
+// =====================================================================
 
-var CORS_HEADERS = {
+var CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, ' + REQUIRED_HEADER,
   'Access-Control-Max-Age': '86400'
 };
 
-function corsResponse(body, status, extraHeaders) {
-  var headers = Object.assign({}, CORS_HEADERS, { 'Content-Type': 'application/json' }, extraHeaders || {});
-  return new Response(JSON.stringify(body), { status: status, headers: headers });
+function json(body, status) {
+  return new Response(JSON.stringify(body), {
+    status: status || 200,
+    headers: Object.assign({ 'Content-Type': 'application/json' }, CORS)
+  });
 }
 
-// --- Validation ---
+function err(message, status) {
+  return json({ error: message }, status);
+}
+
+// =====================================================================
+// VALIDATION
+// =====================================================================
 
 function isPositiveInt(val) {
   var n = Number(val);
   return Number.isInteger(n) && n > 0;
 }
 
-// --- Handlers ---
+function parseIds(str) {
+  return str.split(',').filter(isPositiveInt).map(Number);
+}
 
-async function handleCheck(request, env) {
-  var url = new URL(request.url);
+// =====================================================================
+// HANDLERS
+// =====================================================================
+
+async function handleCheck(url, db) {
   var cat = url.searchParams.get('cat');
   var idsParam = url.searchParams.get('ids');
 
-  if (!cat || !isPositiveInt(cat)) {
-    return corsResponse({ error: 'cat requis (entier positif)' }, 400);
-  }
-  if (!idsParam) {
-    return corsResponse({ error: 'ids requis' }, 400);
-  }
+  if (!cat || !isPositiveInt(cat)) return err('cat requis (entier positif)', 400);
+  if (!idsParam) return err('ids requis', 400);
 
-  var ids = idsParam.split(',').filter(isPositiveInt).map(Number);
-  if (ids.length === 0) {
-    return corsResponse({ error: 'aucun id valide' }, 400);
-  }
-  if (ids.length > 100) {
-    return corsResponse({ error: 'max 100 ids par requete' }, 400);
-  }
+  var ids = parseIds(idsParam);
+  if (ids.length === 0) return err('aucun id valide', 400);
+  if (ids.length > MAX_ITEMS) return err('max ' + MAX_ITEMS + ' ids', 400);
 
-  var catNum = Number(cat);
   var placeholders = ids.map(function () { return '?'; }).join(',');
-  var query = 'SELECT numreponse, flagged, checked_at FROM posts WHERE cat = ? AND numreponse IN (' + placeholders + ')';
-  var params = [catNum].concat(ids);
+  var stmt = db.prepare(
+    'SELECT numreponse, flagged, checked_at FROM posts WHERE cat = ? AND numreponse IN (' + placeholders + ')'
+  );
 
-  var result = await env.DB.prepare(query).bind.apply(env.DB.prepare(query), params).all();
+  var result = await stmt.bind(Number(cat), ...ids).all();
 
   var posts = {};
-  result.results.forEach(function (row) {
+  for (var row of result.results) {
     posts[row.numreponse] = {
       flagged: row.flagged === 1,
       checkedAt: row.checked_at
     };
-  });
-
-  return corsResponse(posts);
+  }
+  return json(posts);
 }
 
-async function handleReport(request, env) {
+async function handleReport(request, db) {
   var body;
-  try {
-    body = await request.json();
-  } catch (e) {
-    return corsResponse({ error: 'JSON invalide' }, 400);
-  }
+  try { body = await request.json(); }
+  catch (e) { return err('JSON invalide', 400); }
 
-  if (!body.results || !Array.isArray(body.results)) {
-    return corsResponse({ error: 'results requis (tableau)' }, 400);
-  }
+  if (!Array.isArray(body.results)) return err('results requis (tableau)', 400);
+  if (body.results.length > MAX_ITEMS) return err('max ' + MAX_ITEMS + ' results', 400);
 
-  if (body.results.length > 100) {
-    return corsResponse({ error: 'max 100 results par requete' }, 400);
-  }
-
-  var updated = 0;
   var stmts = [];
 
-  for (var i = 0; i < body.results.length; i++) {
-    var r = body.results[i];
-    if (!isPositiveInt(r.cat) || !isPositiveInt(r.numreponse) || !isPositiveInt(r.post)) {
-      continue;
-    }
-    if (typeof r.flagged !== 'boolean') {
-      continue;
-    }
+  for (var r of body.results) {
+    if (!isPositiveInt(r.cat) || !isPositiveInt(r.numreponse) || !isPositiveInt(r.post)) continue;
+    if (typeof r.flagged !== 'boolean') continue;
 
     if (r.flagged) {
-      // Alerte -> INSERT ou UPDATE vers flagged=1 (toujours)
+      // Alerte : toujours ecrire flagged=1
       stmts.push(
-        env.DB.prepare(
-          'INSERT INTO posts (cat, numreponse, post_id, flagged, checked_at) VALUES (?, ?, ?, 1, datetime(\'now\')) '
-          + 'ON CONFLICT(cat, numreponse) DO UPDATE SET flagged = 1, checked_at = datetime(\'now\')'
+        db.prepare(
+          "INSERT INTO posts (cat, numreponse, post_id, flagged, checked_at) VALUES (?, ?, ?, 1, datetime('now')) "
+          + "ON CONFLICT(cat, numreponse) DO UPDATE SET flagged = 1, checked_at = datetime('now')"
         ).bind(Number(r.cat), Number(r.numreponse), Number(r.post))
       );
     } else {
-      // Pas alerte -> INSERT ou UPDATE SEULEMENT si pas deja flagged=1
+      // Pas alerte : ecrire seulement si pas deja flagged=1 (anti-rollback)
       stmts.push(
-        env.DB.prepare(
-          'INSERT INTO posts (cat, numreponse, post_id, flagged, checked_at) VALUES (?, ?, ?, 0, datetime(\'now\')) '
-          + 'ON CONFLICT(cat, numreponse) DO UPDATE SET checked_at = datetime(\'now\') WHERE flagged = 0'
+        db.prepare(
+          "INSERT INTO posts (cat, numreponse, post_id, flagged, checked_at) VALUES (?, ?, ?, 0, datetime('now')) "
+          + "ON CONFLICT(cat, numreponse) DO UPDATE SET checked_at = datetime('now') WHERE flagged = 0"
         ).bind(Number(r.cat), Number(r.numreponse), Number(r.post))
       );
     }
-    updated++;
   }
 
-  if (stmts.length > 0) {
-    await env.DB.batch(stmts);
-  }
+  if (stmts.length > 0) await db.batch(stmts);
 
-  return corsResponse({ ok: true, updated: updated });
+  return json({ ok: true, updated: stmts.length });
 }
 
-async function handleTopic(request, env) {
-  var url = new URL(request.url);
+async function handleTopic(url, db) {
   var cat = url.searchParams.get('cat');
   var post = url.searchParams.get('post');
 
-  if (!cat || !isPositiveInt(cat)) {
-    return corsResponse({ error: 'cat requis (entier positif)' }, 400);
-  }
-  if (!post || !isPositiveInt(post)) {
-    return corsResponse({ error: 'post requis (entier positif)' }, 400);
-  }
+  if (!cat || !isPositiveInt(cat)) return err('cat requis (entier positif)', 400);
+  if (!post || !isPositiveInt(post)) return err('post requis (entier positif)', 400);
 
-  var result = await env.DB.prepare(
+  var result = await db.prepare(
     'SELECT numreponse FROM posts WHERE cat = ? AND post_id = ? AND flagged = 1'
   ).bind(Number(cat), Number(post)).all();
 
-  var flagged = result.results.map(function (row) {
-    return { numreponse: row.numreponse };
-  });
-
-  return corsResponse({ flagged: flagged, total: flagged.length });
+  var flagged = result.results.map(function (row) { return { numreponse: row.numreponse }; });
+  return json({ flagged: flagged, total: flagged.length });
 }
 
-async function handleStats(request, env) {
-  var total = await env.DB.prepare('SELECT COUNT(*) as c FROM posts').first();
-  var flaggedCount = await env.DB.prepare('SELECT COUNT(*) as c FROM posts WHERE flagged = 1').first();
-
-  return corsResponse({
-    totalPosts: total.c,
-    flaggedPosts: flaggedCount.c
-  });
+async function handleStats(db) {
+  var total = await db.prepare('SELECT COUNT(*) as c FROM posts').first();
+  var flaggedCount = await db.prepare('SELECT COUNT(*) as c FROM posts WHERE flagged = 1').first();
+  return json({ totalPosts: total.c, flaggedPosts: flaggedCount.c });
 }
 
-// --- Router ---
+// =====================================================================
+// ROUTER
+// =====================================================================
+
+var routes = {
+  'GET /check': handleCheck,
+  'GET /topic': handleTopic,
+  'GET /stats': handleStats,
+  'POST /report': handleReport
+};
 
 export default {
   async fetch(request, env) {
-    // CORS preflight
     if (request.method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers: CORS_HEADERS });
+      return new Response(null, { status: 204, headers: CORS });
     }
 
-    // Auth guard : header obligatoire
     if (!request.headers.get(REQUIRED_HEADER)) {
-      return corsResponse({ error: 'header ' + REQUIRED_HEADER + ' requis' }, 403);
+      return err('header ' + REQUIRED_HEADER + ' requis', 403);
     }
 
     var url = new URL(request.url);
-    var path = url.pathname;
+    var routeKey = request.method + ' ' + url.pathname;
 
     try {
-      if (path === '/check' && request.method === 'GET') {
-        return await handleCheck(request, env);
-      }
-      if (path === '/report' && request.method === 'POST') {
-        return await handleReport(request, env);
-      }
-      if (path === '/topic' && request.method === 'GET') {
-        return await handleTopic(request, env);
-      }
-      if (path === '/stats' && request.method === 'GET') {
-        return await handleStats(request, env);
-      }
-
-      return corsResponse({ error: 'endpoint inconnu' }, 404);
+      if (routeKey === 'GET /check') return await handleCheck(url, env.DB);
+      if (routeKey === 'POST /report') return await handleReport(request, env.DB);
+      if (routeKey === 'GET /topic') return await handleTopic(url, env.DB);
+      if (routeKey === 'GET /stats') return await handleStats(env.DB);
+      return err('endpoint inconnu', 404);
     } catch (e) {
-      console.error('Erreur Worker:', e);
-      return corsResponse({ error: 'erreur interne' }, 500);
+      console.error('Worker error:', e);
+      return err('erreur interne', 500);
     }
   }
 };

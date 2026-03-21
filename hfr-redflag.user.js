@@ -244,7 +244,9 @@
 
     if (allResults.length === 0) return Promise.resolve(null);
 
+    console.log(PREFIX, 'Report: envoi de', allResults.length, 'resultats au Worker');
     return apiRequest('POST', '/report', { results: allResults }).then(function (resp) {
+      console.log(PREFIX, 'Report: reponse Worker:', JSON.stringify(resp));
       if (resp && resp.ok) {
         // Succes : vider la queue
         clearFailedReports();

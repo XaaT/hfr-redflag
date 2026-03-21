@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.2 — 2026-03-22
+
+### Améliorations
+- Renommage du script en `[HFR] RedFlag` pour cohérence avec les conventions TM
+- Ajout de l'icône favicon HFR dans Tampermonkey
+
 ## 0.5.1 — 2026-03-21
 
 ### Corrections

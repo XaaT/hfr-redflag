@@ -530,7 +530,7 @@
 
       // Phase 3 : scan modo.php pour les posts inconnus
       widget.textContent = 'RedFlag: scan modo.php...';
-      var queue = new ThrottledQueue(400);
+      var queue = new ThrottledQueue(200);
       var checked = 0;
       var scanResults = [];
 

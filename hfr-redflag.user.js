@@ -1,19 +1,22 @@
 // ==UserScript==
 // @name         HFR RedFlag
 // @namespace    https://github.com/XaaT/hfr-redflag
-// @version      0.3.0
+// @version      0.3.1
 // @description  Met en evidence les posts alertes a la moderation sur forum.hardware.fr
 // @author       xat
 // @match        https://forum.hardware.fr/forum2.php*
 // @match        https://forum.hardware.fr/hfr/*
 // @grant        GM_addStyle
 // @grant        GM_xmlhttpRequest
+// @grant        GM.addStyle
+// @grant        GM.xmlHttpRequest
 // @connect      hfr-redflag.clement-665.workers.dev
 // @updateURL    https://raw.githubusercontent.com/XaaT/hfr-redflag/master/hfr-redflag.user.js
 // @downloadURL  https://raw.githubusercontent.com/XaaT/hfr-redflag/master/hfr-redflag.user.js
 // @license      MIT
 // ==/UserScript==
 // --- Changelog ---
+//   0.3.1 - Compatibilite Greasemonkey v4 + Violentmonkey (shims GM.*)
 //   0.3.0 - Cache partage via CF Worker + D1, les scans profitent a tous
 //   0.2.0 - MVP : detection modo.php, affichage fond rouge + badge, cache local
 //   0.1.0 - Structure initiale
@@ -21,6 +24,27 @@
 
 (function () {
   'use strict';
+
+  // --- Shims de compatibilite Greasemonkey v4 ---
+  // GM4 utilise GM.xmlHttpRequest (promise-based) au lieu de GM_xmlhttpRequest (callback)
+  if (typeof GM_xmlhttpRequest === 'undefined') {
+    if (typeof GM !== 'undefined' && GM.xmlHttpRequest) {
+      GM_xmlhttpRequest = function (opts) { return GM.xmlHttpRequest(opts); };
+    }
+  }
+  // GM_addStyle n'existe pas dans GM4
+  if (typeof GM_addStyle === 'undefined') {
+    if (typeof GM !== 'undefined' && GM.addStyle) {
+      GM_addStyle = function (css) { return GM.addStyle(css); };
+    } else {
+      GM_addStyle = function (css) {
+        var style = document.createElement('style');
+        style.textContent = css;
+        document.head.appendChild(style);
+        return style;
+      };
+    }
+  }
 
   var PREFIX = '[HFR RedFlag]';
   var API_URL = 'https://hfr-redflag.clement-665.workers.dev';

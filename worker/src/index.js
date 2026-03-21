@@ -117,7 +117,7 @@ async function handleReport(request, db) {
 
   if (stmts.length > 0) await db.batch(stmts);
 
-  return json({ ok: true, updated: stmts.length });
+  return json({ ok: true, submitted: stmts.length });
 }
 
 async function handleTopic(url, db) {
@@ -144,13 +144,6 @@ async function handleStats(db) {
 // =====================================================================
 // ROUTER
 // =====================================================================
-
-var routes = {
-  'GET /check': handleCheck,
-  'GET /topic': handleTopic,
-  'GET /stats': handleStats,
-  'POST /report': handleReport
-};
 
 export default {
   async fetch(request, env) {

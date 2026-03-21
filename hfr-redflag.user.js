@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         HFR RedFlag
 // @namespace    https://github.com/XaaT/hfr-redflag
-// @version      0.5.0
+// @version      0.5.1
 // @description  Met en evidence les posts alertes a la moderation sur forum.hardware.fr
 // @author       xat
 // @match        https://forum.hardware.fr/forum2.php*
@@ -16,6 +16,7 @@
 // @license      MIT
 // ==/UserScript==
 // --- Changelog ---
+//   0.5.1 - Fix review : detection binaire stricte, compat .finally(), cache 5k, quota LS
 //   0.5.0 - Refactoring : config centralisee, nettoyage cache, code structure
 //   0.4.2 - Retrait logs debug
 //   0.4.1 - Fix retry queue vide + logs debug temporaires
@@ -46,7 +47,7 @@
     // Cache local (localStorage)
     cacheKey: 'hfr_redflag_cache',
     cacheTtl: 3600000,           // 1h pour les "pas alerte"
-    cacheMaxEntries: 50000,      // nettoyage au-dela
+    cacheMaxEntries: 5000,       // nettoyage au-dela
 
     // Circuit breaker
     cbKey: 'hfr_redflag_circuit',
@@ -94,7 +95,11 @@
 
   function lsSet(key, value) {
     try { localStorage.setItem(key, JSON.stringify(value)); }
-    catch (e) {}
+    catch (e) {
+      if (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED') {
+        console.warn(PREFIX, 'localStorage quota atteint, donnees non sauvegardees');
+      }
+    }
   }
 
   function lsRemove(key) {
@@ -342,13 +347,8 @@
         if (html.indexOf('<textarea') !== -1 || html.indexOf('Raison de la demande') !== -1) {
           return resolve({ numreponse: numreponse, flagged: false });
         }
-        // Message de moderation = alerte
-        if (html.indexOf('mod\u00e9ration') !== -1 || html.indexOf('moderation') !== -1) {
-          return resolve({ numreponse: numreponse, flagged: true });
-        }
-        // Reponse inattendue
-        console.warn(PREFIX, 'Reponse inattendue pour', numreponse);
-        resolve(null);
+        // Tout autre cas = alerte (detection binaire : pas le formulaire = alerte)
+        resolve({ numreponse: numreponse, flagged: true });
       };
 
       xhr.onerror = function () { resolve(null); };
@@ -379,9 +379,8 @@
     var self = this;
     if (self.queue.length === 0) { self.running = false; return; }
     self.running = true;
-    self.queue.shift()().finally(function () {
-      setTimeout(function () { self._run(); }, self.delayMs);
-    });
+    var next = function () { setTimeout(function () { self._run(); }, self.delayMs); };
+    self.queue.shift()().then(next, next);
   };
 
   // =====================================================================
@@ -481,7 +480,7 @@
     if (pending.length > 0 && !isCircuitOpen()) {
       console.log(PREFIX, 'Retry de', pending.length, 'reports en queue');
       reportToWorker([]).then(function (resp) {
-        if (resp && resp.ok) console.log(PREFIX, 'Queue videe:', resp.updated, 'envoyes');
+        if (resp && resp.ok) console.log(PREFIX, 'Queue videe:', resp.submitted, 'envoyes');
       });
     }
 
@@ -546,7 +545,7 @@
         if (results.length > 0) {
           console.log(PREFIX, 'Report:', results.length, 'resultats');
           reportToWorker(results).then(function (resp) {
-            if (resp && resp.ok) console.log(PREFIX, 'Worker OK:', resp.updated, 'mis a jour');
+            if (resp && resp.ok) console.log(PREFIX, 'Worker OK:', resp.submitted, 'mis a jour');
           });
         }
 

@@ -2,7 +2,7 @@
 // @name         [HFR] RedFlag
 // @namespace    https://github.com/XaaT/hfr-redflag
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=hardware.fr
-// @version      0.6.0
+// @version      0.6.1
 // @description  Met en evidence les posts alertes a la moderation sur forum.hardware.fr
 // @author       xat
 // @match        https://forum.hardware.fr/forum2.php*
@@ -18,11 +18,12 @@
 // @grant        GM.getValue
 // @grant        GM.setValue
 // @connect      hfr-redflag.clement-665.workers.dev
-// @updateURL    https://raw.githubusercontent.com/XaaT/hfr-redflag/master/hfr-redflag.user.js
-// @downloadURL  https://raw.githubusercontent.com/XaaT/hfr-redflag/master/hfr-redflag.user.js
+// @updateURL    https://github.com/XaaT/hfr-redflag/raw/refs/heads/master/hfr-redflag.user.js
+// @downloadURL  https://github.com/XaaT/hfr-redflag/raw/refs/heads/master/hfr-redflag.user.js
 // @license      MIT
 // ==/UserScript==
 // --- Changelog ---
+//   0.6.1 - Fix report > 100 items : decoupe en chunks + URL update fix
 //   0.6.0 - Preferences : choix du style (fond/bordure/badge) et de la couleur via menu TM
 //   0.5.2 - Renommage [HFR] RedFlag + icone favicon dans TM
 //   0.5.1 - Fix review : detection binaire stricte, compat .finally(), cache 5k, quota LS
@@ -477,16 +478,36 @@
     var all = queued.concat(results);
     if (all.length === 0) return Promise.resolve(null);
 
-    return apiRequest('POST', '/report', { results: all }).then(function (resp) {
-      if (resp && resp.ok) {
-        clearRetryQueue();
-        return resp;
-      } else {
-        saveRetryQueue(all);
-        console.warn(PREFIX, 'Report echoue,', all.length, 'en queue pour retry');
-        return null;
+    // Decouper en chunks de 100 max (limite Worker)
+    var chunks = [];
+    for (var i = 0; i < all.length; i += 100) {
+      chunks.push(all.slice(i, i + 100));
+    }
+
+    var failed = [];
+    var totalSubmitted = 0;
+
+    function sendChunk(idx) {
+      if (idx >= chunks.length) {
+        if (failed.length > 0) {
+          saveRetryQueue(failed);
+          console.warn(PREFIX, 'Report partiel,', failed.length, 'en queue pour retry');
+        } else {
+          clearRetryQueue();
+        }
+        return Promise.resolve({ ok: true, submitted: totalSubmitted });
       }
-    });
+      return apiRequest('POST', '/report', { results: chunks[idx] }).then(function (resp) {
+        if (resp && resp.ok) {
+          totalSubmitted += (resp.submitted || chunks[idx].length);
+        } else {
+          failed = failed.concat(chunks[idx]);
+        }
+        return sendChunk(idx + 1);
+      });
+    }
+
+    return sendChunk(0);
   }
 
   // =====================================================================

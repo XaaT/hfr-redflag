@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.1 — 2026-03-22
+
+### Corrections
+- Fix report échoué quand la retry queue dépasse 100 items (limite Worker) — découpe en chunks de 100
+- Fix URL de mise à jour (`@updateURL`/`@downloadURL`) pour contourner le cache CDN GitHub
+
 ## 0.6.0 — 2026-03-22
 
 ### Nouveautés

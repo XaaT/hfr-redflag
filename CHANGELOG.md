@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.0 — 2026-03-22
+
+### Nouveautés
+- Panneau de préférences accessible via le menu Tampermonkey (clic sur l'icône TM → "RedFlag: Preferences")
+- Choix du style d'affichage : fond coloré (défaut), bordure gauche, ou badge uniquement
+- Choix de la couleur : rouge, orange, jaune, bleu, violet, sombre (pour dark themes)
+- Aperçu en direct dans le panneau de préférences
+- Compatible Tampermonkey, Violentmonkey et Greasemonkey v4
+
 ## 0.5.2 — 2026-03-22
 
 ### Améliorations

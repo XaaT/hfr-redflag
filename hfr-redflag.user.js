@@ -2,21 +2,28 @@
 // @name         [HFR] RedFlag
 // @namespace    https://github.com/XaaT/hfr-redflag
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=hardware.fr
-// @version      0.5.2
+// @version      0.6.0
 // @description  Met en evidence les posts alertes a la moderation sur forum.hardware.fr
 // @author       xat
 // @match        https://forum.hardware.fr/forum2.php*
 // @match        https://forum.hardware.fr/hfr/*
 // @grant        GM_addStyle
 // @grant        GM_xmlhttpRequest
+// @grant        GM_registerMenuCommand
+// @grant        GM_getValue
+// @grant        GM_setValue
 // @grant        GM.addStyle
 // @grant        GM.xmlHttpRequest
+// @grant        GM.registerMenuCommand
+// @grant        GM.getValue
+// @grant        GM.setValue
 // @connect      hfr-redflag.clement-665.workers.dev
 // @updateURL    https://raw.githubusercontent.com/XaaT/hfr-redflag/master/hfr-redflag.user.js
 // @downloadURL  https://raw.githubusercontent.com/XaaT/hfr-redflag/master/hfr-redflag.user.js
 // @license      MIT
 // ==/UserScript==
 // --- Changelog ---
+//   0.6.0 - Preferences : choix du style (fond/bordure/badge) et de la couleur via menu TM
 //   0.5.2 - Renommage [HFR] RedFlag + icone favicon dans TM
 //   0.5.1 - Fix review : detection binaire stricte, compat .finally(), cache 5k, quota LS
 //   0.5.0 - Refactoring : config centralisee, nettoyage cache, code structure
@@ -39,7 +46,7 @@
   var CONFIG = {
     // API Worker
     apiUrl: 'https://hfr-redflag.clement-665.workers.dev',
-    apiVersion: '0.5.0',
+    apiVersion: '0.6.0',
     apiTimeout: 5000,            // ms
 
     // Throttle modo.php
@@ -85,6 +92,165 @@
       };
     }
   }
+  if (typeof GM_registerMenuCommand === 'undefined') {
+    if (typeof GM !== 'undefined' && GM.registerMenuCommand) {
+      GM_registerMenuCommand = function (name, fn) { return GM.registerMenuCommand(name, fn); };
+    } else {
+      GM_registerMenuCommand = function () {}; // noop si non supporte
+    }
+  }
+  if (typeof GM_getValue === 'undefined') {
+    if (typeof GM !== 'undefined' && GM.getValue) {
+      // GM4 getValue est async, on utilise localStorage en fallback
+      GM_getValue = function (key, def) {
+        var v = localStorage.getItem('hfr_redflag_pref_' + key);
+        return v !== null ? JSON.parse(v) : def;
+      };
+      GM_setValue = function (key, val) {
+        localStorage.setItem('hfr_redflag_pref_' + key, JSON.stringify(val));
+      };
+    } else {
+      GM_getValue = function (key, def) {
+        var v = localStorage.getItem('hfr_redflag_pref_' + key);
+        return v !== null ? JSON.parse(v) : def;
+      };
+      GM_setValue = function (key, val) {
+        localStorage.setItem('hfr_redflag_pref_' + key, JSON.stringify(val));
+      };
+    }
+  }
+
+  // =====================================================================
+  // PREFERENCES UTILISATEUR
+  // =====================================================================
+
+  var MODES = {
+    background: 'Fond colore',
+    border:     'Bordure gauche',
+    badge:      'Badge uniquement'
+  };
+
+  var COLORS = {
+    rouge:  { bg: '#ffcccc', border: '#cc0000', badge: '#cc0000' },
+    orange: { bg: '#ffe0cc', border: '#cc6600', badge: '#cc6600' },
+    jaune:  { bg: '#fff3cc', border: '#ccaa00', badge: '#ccaa00' },
+    bleu:   { bg: '#cce0ff', border: '#0066cc', badge: '#0066cc' },
+    violet: { bg: '#e8ccff', border: '#7700cc', badge: '#7700cc' },
+    sombre: { bg: '#4a1a1a', border: '#ff4444', badge: '#ff4444' }
+  };
+
+  var DEFAULT_PREFS = { mode: 'background', color: 'rouge' };
+
+  function loadPrefs() {
+    return {
+      mode: GM_getValue('mode', DEFAULT_PREFS.mode),
+      color: GM_getValue('color', DEFAULT_PREFS.color)
+    };
+  }
+
+  function savePrefs(prefs) {
+    GM_setValue('mode', prefs.mode);
+    GM_setValue('color', prefs.color);
+  }
+
+  function getColorSet(prefs) {
+    return COLORS[prefs.color] || COLORS.rouge;
+  }
+
+  // --- Panneau de preferences ---
+
+  function openPrefsPanel() {
+    // Supprimer un panel existant
+    var old = document.getElementById('hfr-redflag-prefs');
+    if (old) { old.remove(); return; }
+
+    var prefs = loadPrefs();
+
+    var overlay = document.createElement('div');
+    overlay.id = 'hfr-redflag-prefs';
+    overlay.innerHTML = ''
+      + '<div style="position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:100000;display:flex;align-items:center;justify-content:center">'
+      + '<div style="background:white;border-radius:8px;padding:20px;min-width:320px;max-width:400px;font-family:sans-serif;font-size:14px;color:#333;box-shadow:0 4px 20px rgba(0,0,0,0.3)">'
+      + '<div style="font-size:16px;font-weight:bold;margin-bottom:16px">[HFR] RedFlag — Preferences</div>'
+      + '<div style="margin-bottom:12px"><b>Style d\'affichage :</b></div>'
+      + '<div id="hfr-rf-modes" style="margin-bottom:16px"></div>'
+      + '<div style="margin-bottom:12px"><b>Couleur :</b></div>'
+      + '<div id="hfr-rf-colors" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px"></div>'
+      + '<div id="hfr-rf-preview" style="padding:8px;border-radius:4px;margin-bottom:16px;font-size:12px">Apercu</div>'
+      + '<div style="display:flex;gap:8px;justify-content:flex-end">'
+      + '<button id="hfr-rf-cancel" style="padding:6px 16px;border:1px solid #ccc;border-radius:4px;background:white;cursor:pointer">Annuler</button>'
+      + '<button id="hfr-rf-save" style="padding:6px 16px;border:none;border-radius:4px;background:#cc0000;color:white;cursor:pointer;font-weight:bold">Enregistrer</button>'
+      + '</div></div></div>';
+
+    document.body.appendChild(overlay);
+
+    var selectedMode = prefs.mode;
+    var selectedColor = prefs.color;
+
+    // Generer les boutons de mode
+    var modesDiv = document.getElementById('hfr-rf-modes');
+    Object.keys(MODES).forEach(function (key) {
+      var btn = document.createElement('label');
+      btn.style.cssText = 'display:block;margin-bottom:6px;cursor:pointer';
+      btn.innerHTML = '<input type="radio" name="hfr-rf-mode" value="' + key + '"'
+        + (key === selectedMode ? ' checked' : '') + '> ' + MODES[key];
+      btn.querySelector('input').addEventListener('change', function () {
+        selectedMode = key;
+        updatePreview();
+      });
+      modesDiv.appendChild(btn);
+    });
+
+    // Generer les pastilles de couleur
+    var colorsDiv = document.getElementById('hfr-rf-colors');
+    Object.keys(COLORS).forEach(function (key) {
+      var c = COLORS[key];
+      var swatch = document.createElement('div');
+      swatch.title = key;
+      swatch.style.cssText = 'width:32px;height:32px;border-radius:50%;cursor:pointer;border:3px solid '
+        + (key === selectedColor ? '#333' : 'transparent') + ';background:' + c.badge;
+      swatch.addEventListener('click', function () {
+        selectedColor = key;
+        colorsDiv.querySelectorAll('div').forEach(function (d) {
+          d.style.borderColor = 'transparent';
+        });
+        swatch.style.borderColor = '#333';
+        updatePreview();
+      });
+      colorsDiv.appendChild(swatch);
+    });
+
+    function updatePreview() {
+      var preview = document.getElementById('hfr-rf-preview');
+      var c = COLORS[selectedColor] || COLORS.rouge;
+      if (selectedMode === 'background') {
+        preview.style.cssText = 'padding:8px;border-radius:4px;margin-bottom:16px;font-size:12px;background:' + c.bg + ';border-left:none';
+      } else if (selectedMode === 'border') {
+        preview.style.cssText = 'padding:8px;border-radius:4px;margin-bottom:16px;font-size:12px;background:transparent;border-left:4px solid ' + c.border;
+      } else {
+        preview.style.cssText = 'padding:8px;border-radius:4px;margin-bottom:16px;font-size:12px;background:transparent;border-left:none';
+      }
+      preview.innerHTML = 'Apercu du style <span style="display:inline-block;background:' + c.badge
+        + ';color:white;font-size:10px;font-weight:bold;padding:1px 5px;border-radius:3px;margin-left:6px">\u26A0 Alert\u00e9</span>';
+    }
+    updatePreview();
+
+    // Fermer
+    overlay.querySelector('#hfr-rf-cancel').addEventListener('click', function () { overlay.remove(); });
+    overlay.firstChild.addEventListener('click', function (e) {
+      if (e.target === overlay.firstChild) overlay.remove();
+    });
+
+    // Sauvegarder
+    overlay.querySelector('#hfr-rf-save').addEventListener('click', function () {
+      savePrefs({ mode: selectedMode, color: selectedColor });
+      overlay.remove();
+      location.reload();
+    });
+  }
+
+  // Enregistrer la commande menu TM
+  GM_registerMenuCommand('RedFlag: Preferences', openPrefsPanel);
 
   // =====================================================================
   // LOCALSTORAGE HELPERS
@@ -389,22 +555,39 @@
   // AFFICHAGE
   // =====================================================================
 
-  var CSS = ''
-    + 'table.messagetable.hfr-redflag-flagged > tbody > tr.message,'
-    + 'table.messagetable.hfr-redflag-flagged td.messCase1,'
-    + 'table.messagetable.hfr-redflag-flagged td.messCase2'
-    + '{ background-color: #ffcccc !important; }'
-    + '.hfr-redflag-badge {'
-    + '  display: inline-block; background: #cc0000; color: white;'
-    + '  font-size: 10px; font-weight: bold; padding: 1px 5px;'
-    + '  border-radius: 3px; margin-top: 4px;'
-    + '}'
-    + '.hfr-redflag-status {'
-    + '  position: fixed; bottom: 8px; right: 8px;'
-    + '  background: rgba(0,0,0,0.7); color: white;'
-    + '  font-size: 11px; padding: 4px 10px; border-radius: 4px;'
-    + '  z-index: 99999; font-family: sans-serif;'
-    + '}';
+  function buildCSS(prefs) {
+    var c = getColorSet(prefs);
+    var css = '';
+
+    // Style du post alerte selon le mode
+    if (prefs.mode === 'background') {
+      css += 'table.messagetable.hfr-redflag-flagged > tbody > tr.message,'
+        + 'table.messagetable.hfr-redflag-flagged td.messCase1,'
+        + 'table.messagetable.hfr-redflag-flagged td.messCase2'
+        + '{ background-color: ' + c.bg + ' !important; }';
+    } else if (prefs.mode === 'border') {
+      css += 'table.messagetable.hfr-redflag-flagged'
+        + '{ border-left: 4px solid ' + c.border + ' !important; }';
+    }
+    // mode badge : aucun style sur le post, juste le badge
+
+    // Badge
+    css += '.hfr-redflag-badge {'
+      + '  display: inline-block; background: ' + c.badge + '; color: white;'
+      + '  font-size: 10px; font-weight: bold; padding: 1px 5px;'
+      + '  border-radius: 3px; margin-top: 4px;'
+      + '}';
+
+    // Widget de statut
+    css += '.hfr-redflag-status {'
+      + '  position: fixed; bottom: 8px; right: 8px;'
+      + '  background: rgba(0,0,0,0.7); color: white;'
+      + '  font-size: 11px; padding: 4px 10px; border-radius: 4px;'
+      + '  z-index: 99999; font-family: sans-serif;'
+      + '}';
+
+    return css;
+  }
 
   function markPostFlagged(numreponse) {
     var anchor = document.querySelector('a[name="t' + numreponse + '"]');
@@ -458,7 +641,8 @@
     console.log(PREFIX, numreponses.length, 'posts');
     if (numreponses.length === 0) return;
 
-    GM_addStyle(CSS);
+    var prefs = loadPrefs();
+    GM_addStyle(buildCSS(prefs));
     var widget = createWidget();
 
     // Phase 1 : cache local

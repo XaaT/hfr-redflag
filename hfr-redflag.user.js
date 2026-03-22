@@ -2,7 +2,7 @@
 // @name         [HFR] RedFlag
 // @namespace    https://github.com/XaaT/hfr-redflag
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=hardware.fr
-// @version      0.7.0
+// @version      0.7.1
 // @description  Met en evidence les posts alertes a la moderation sur forum.hardware.fr
 // @author       xat
 // @match        https://forum.hardware.fr/forum2.php*
@@ -23,6 +23,7 @@
 // @license      MIT
 // ==/UserScript==
 // --- Changelog ---
+//   0.7.1 - Fix color picker : gradient arc-en-ciel + indicateur "+" + preset sombre revu
 //   0.7.0 - Widget discret (alertes/erreurs uniquement) + mode debug + color picker custom
 //   0.6.1 - Fix report > 100 items : decoupe en chunks + URL update fix
 //   0.6.0 - Preferences : choix du style (fond/bordure/badge) et de la couleur via menu TM
@@ -137,7 +138,7 @@
     bleu:   { bg: '#cce0ff', border: '#0066cc', badge: '#0066cc' },
     vert:   { bg: '#ccf2cc', border: '#009900', badge: '#009900' },
     violet: { bg: '#e8ccff', border: '#7700cc', badge: '#7700cc' },
-    sombre: { bg: '#4a1a1a', border: '#ff4444', badge: '#ff4444' }
+    sombre: { bg: '#3d1111', border: '#e84040', badge: '#e84040' }
   };
 
   var DEFAULT_PREFS = { mode: 'background', color: 'rouge', debug: false };
@@ -253,19 +254,39 @@
     });
 
     // Color picker custom
+    var isCustom = selectedColor.charAt(0) === '#';
+    var pickerWrap = document.createElement('div');
+    pickerWrap.title = 'Couleur personnalis\u00e9e';
+    pickerWrap.style.cssText = 'width:32px;height:32px;border-radius:50%;cursor:pointer;border:3px solid '
+      + (isCustom ? '#333' : 'transparent')
+      + ';background:conic-gradient(red,yellow,lime,cyan,blue,magenta,red);position:relative;overflow:hidden';
     var colorInput = document.createElement('input');
     colorInput.type = 'color';
-    colorInput.title = 'Couleur personnalis\u00e9e';
-    colorInput.style.cssText = 'width:32px;height:32px;border:3px solid '
-      + (selectedColor.charAt(0) === '#' ? '#333' : 'transparent')
-      + ';border-radius:50%;cursor:pointer;padding:0;background:none;-webkit-appearance:none';
-    colorInput.value = selectedColor.charAt(0) === '#' ? selectedColor : COLORS.rouge.badge;
+    colorInput.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;opacity:0;cursor:pointer';
+    colorInput.value = isCustom ? selectedColor : '#cc0000';
+    var pickerLabel = document.createElement('span');
+    pickerLabel.textContent = '+';
+    pickerLabel.style.cssText = 'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);'
+      + 'font-size:18px;font-weight:bold;color:white;text-shadow:0 0 3px rgba(0,0,0,0.8);pointer-events:none';
+    pickerWrap.appendChild(colorInput);
+    pickerWrap.appendChild(pickerLabel);
+    allSwatches.push(pickerWrap);
+
     colorInput.addEventListener('input', function () {
       selectSwatch(colorInput.value);
-      colorInput.style.borderColor = '#333';
+      pickerWrap.style.borderColor = '#333';
+      pickerWrap.style.background = colorInput.value;
+      pickerLabel.textContent = '';
       updatePreview();
     });
-    colorsDiv.appendChild(colorInput);
+
+    // Si une couleur custom etait deja selectionnee, afficher sa couleur
+    if (isCustom) {
+      pickerWrap.style.background = selectedColor;
+      pickerLabel.textContent = '';
+    }
+
+    colorsDiv.appendChild(pickerWrap);
 
     function updatePreview() {
       var preview = document.getElementById('hfr-rf-preview');

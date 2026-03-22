@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.1 — 2026-03-22
+
+### Corrections
+- Color picker : fond arc-en-ciel avec "+" pour indiquer que c'est un sélecteur custom
+- Color picker : affiche sa propre couleur une fois sélectionné (pas celle du preset)
+- Preset "sombre" revu pour être plus visible comme pastille
+
 ## 0.7.0 — 2026-03-22
 
 ### Nouveautés

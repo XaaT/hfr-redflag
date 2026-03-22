@@ -68,7 +68,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           body: |
-            ${{ steps.bbcode.outputs.bbcode }}
+            BBCode prêt à copier-coller sur HFR :
 
-            ---
-            *BBCode ci-dessus prêt à copier-coller sur HFR.*
+            ```
+            ${{ steps.bbcode.outputs.bbcode }}
+            ```

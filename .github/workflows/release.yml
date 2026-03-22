@@ -33,8 +33,8 @@ jobs:
           SECTION_COUNT=$(echo "$CHANGELOG" | grep -c "^### " || true)
 
           # Header commun
-          HEADER="[:peronnelle]  [b][url=https://github.com/XaaT/hfr-redflag]RedFlag[/url] v${VERSION}[/b]"
-          FOOTER="[:pow-wow] [url=https://github.com/XaaT/hfr-redflag/raw/refs/heads/master/hfr-redflag.user.js]Installer / mettre a jour[/url]"
+          HEADER="[:peronnelle] [b][url=https://github.com/XaaT/hfr-redflag]RedFlag[/url] v${VERSION}[/b]"
+          FOOTER="[:pow-wow] [url=https://github.com/XaaT/hfr-redflag/raw/refs/heads/master/hfr-redflag.user.js]Installer / mettre à jour[/url]"
 
           if [ "$SECTION_COUNT" -gt 1 ]; then
             # Format C : convertir ### en [b]...[/b], items en [*]

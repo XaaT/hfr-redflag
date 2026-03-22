@@ -2,7 +2,7 @@
 // @name         [HFR] RedFlag
 // @namespace    https://github.com/XaaT/hfr-redflag
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=hardware.fr
-// @version      0.6.1
+// @version      0.7.0
 // @description  Met en evidence les posts alertes a la moderation sur forum.hardware.fr
 // @author       xat
 // @match        https://forum.hardware.fr/forum2.php*
@@ -23,6 +23,7 @@
 // @license      MIT
 // ==/UserScript==
 // --- Changelog ---
+//   0.7.0 - Widget discret (alertes/erreurs uniquement) + mode debug + color picker custom
 //   0.6.1 - Fix report > 100 items : decoupe en chunks + URL update fix
 //   0.6.0 - Preferences : choix du style (fond/bordure/badge) et de la couleur via menu TM
 //   0.5.2 - Renommage [HFR] RedFlag + icone favicon dans TM
@@ -47,7 +48,7 @@
   var CONFIG = {
     // API Worker
     apiUrl: 'https://hfr-redflag.clement-665.workers.dev',
-    apiVersion: '0.6.0',
+    apiVersion: '0.7.0',
     apiTimeout: 5000,            // ms
 
     // Throttle modo.php
@@ -133,29 +134,44 @@
 
   var COLORS = {
     rouge:  { bg: '#ffcccc', border: '#cc0000', badge: '#cc0000' },
-    orange: { bg: '#ffe0cc', border: '#cc6600', badge: '#cc6600' },
-    jaune:  { bg: '#fff3cc', border: '#ccaa00', badge: '#ccaa00' },
     bleu:   { bg: '#cce0ff', border: '#0066cc', badge: '#0066cc' },
+    vert:   { bg: '#ccf2cc', border: '#009900', badge: '#009900' },
     violet: { bg: '#e8ccff', border: '#7700cc', badge: '#7700cc' },
     sombre: { bg: '#4a1a1a', border: '#ff4444', badge: '#ff4444' }
   };
 
-  var DEFAULT_PREFS = { mode: 'background', color: 'rouge' };
+  var DEFAULT_PREFS = { mode: 'background', color: 'rouge', debug: false };
 
   function loadPrefs() {
     return {
       mode: GM_getValue('mode', DEFAULT_PREFS.mode),
-      color: GM_getValue('color', DEFAULT_PREFS.color)
+      color: GM_getValue('color', DEFAULT_PREFS.color),
+      debug: GM_getValue('debug', DEFAULT_PREFS.debug)
     };
   }
 
   function savePrefs(prefs) {
     GM_setValue('mode', prefs.mode);
     GM_setValue('color', prefs.color);
+    GM_setValue('debug', prefs.debug);
+  }
+
+  function hexToRgb(hex) {
+    var r = parseInt(hex.slice(1, 3), 16);
+    var g = parseInt(hex.slice(3, 5), 16);
+    var b = parseInt(hex.slice(5, 7), 16);
+    return { r: r, g: g, b: b };
   }
 
   function getColorSet(prefs) {
-    return COLORS[prefs.color] || COLORS.rouge;
+    if (COLORS[prefs.color]) return COLORS[prefs.color];
+    // Couleur custom (hex)
+    if (prefs.color && prefs.color.charAt(0) === '#') {
+      var rgb = hexToRgb(prefs.color);
+      var bg = 'rgba(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ',0.2)';
+      return { bg: bg, border: prefs.color, badge: prefs.color };
+    }
+    return COLORS.rouge;
   }
 
   // --- Panneau de preferences ---
@@ -176,8 +192,9 @@
       + '<div style="margin-bottom:12px"><b>Style d\'affichage :</b></div>'
       + '<div id="hfr-rf-modes" style="margin-bottom:16px"></div>'
       + '<div style="margin-bottom:12px"><b>Couleur :</b></div>'
-      + '<div id="hfr-rf-colors" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px"></div>'
+      + '<div id="hfr-rf-colors" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:16px"></div>'
       + '<div id="hfr-rf-preview" style="padding:8px;border-radius:4px;margin-bottom:16px;font-size:12px">Apercu</div>'
+      + '<div style="margin-bottom:16px"><label style="cursor:pointer"><input type="checkbox" id="hfr-rf-debug"> Mode debug (widget de progression permanent)</label></div>'
       + '<div style="display:flex;gap:8px;justify-content:flex-end">'
       + '<button id="hfr-rf-cancel" style="padding:6px 16px;border:1px solid #ccc;border-radius:4px;background:white;cursor:pointer">Annuler</button>'
       + '<button id="hfr-rf-save" style="padding:6px 16px;border:none;border-radius:4px;background:#cc0000;color:white;cursor:pointer;font-weight:bold">Enregistrer</button>'
@@ -187,6 +204,14 @@
 
     var selectedMode = prefs.mode;
     var selectedColor = prefs.color;
+    var selectedDebug = prefs.debug;
+
+    // Init debug checkbox
+    var debugCheckbox = document.getElementById('hfr-rf-debug');
+    debugCheckbox.checked = selectedDebug;
+    debugCheckbox.addEventListener('change', function () {
+      selectedDebug = debugCheckbox.checked;
+    });
 
     // Generer les boutons de mode
     var modesDiv = document.getElementById('hfr-rf-modes');
@@ -202,8 +227,15 @@
       modesDiv.appendChild(btn);
     });
 
-    // Generer les pastilles de couleur
+    // Generer les pastilles de couleur + color picker
     var colorsDiv = document.getElementById('hfr-rf-colors');
+    var allSwatches = [];
+
+    function selectSwatch(key) {
+      selectedColor = key;
+      allSwatches.forEach(function (s) { s.style.borderColor = 'transparent'; });
+    }
+
     Object.keys(COLORS).forEach(function (key) {
       var c = COLORS[key];
       var swatch = document.createElement('div');
@@ -211,25 +243,40 @@
       swatch.style.cssText = 'width:32px;height:32px;border-radius:50%;cursor:pointer;border:3px solid '
         + (key === selectedColor ? '#333' : 'transparent') + ';background:' + c.badge;
       swatch.addEventListener('click', function () {
-        selectedColor = key;
-        colorsDiv.querySelectorAll('div').forEach(function (d) {
-          d.style.borderColor = 'transparent';
-        });
+        selectSwatch(key);
         swatch.style.borderColor = '#333';
+        colorInput.value = c.badge;
         updatePreview();
       });
+      allSwatches.push(swatch);
       colorsDiv.appendChild(swatch);
     });
 
+    // Color picker custom
+    var colorInput = document.createElement('input');
+    colorInput.type = 'color';
+    colorInput.title = 'Couleur personnalis\u00e9e';
+    colorInput.style.cssText = 'width:32px;height:32px;border:3px solid '
+      + (selectedColor.charAt(0) === '#' ? '#333' : 'transparent')
+      + ';border-radius:50%;cursor:pointer;padding:0;background:none;-webkit-appearance:none';
+    colorInput.value = selectedColor.charAt(0) === '#' ? selectedColor : COLORS.rouge.badge;
+    colorInput.addEventListener('input', function () {
+      selectSwatch(colorInput.value);
+      colorInput.style.borderColor = '#333';
+      updatePreview();
+    });
+    colorsDiv.appendChild(colorInput);
+
     function updatePreview() {
       var preview = document.getElementById('hfr-rf-preview');
-      var c = COLORS[selectedColor] || COLORS.rouge;
+      var c = getColorSet({ color: selectedColor });
+      var base = 'padding:8px;border-radius:4px;margin-bottom:16px;font-size:12px;';
       if (selectedMode === 'background') {
-        preview.style.cssText = 'padding:8px;border-radius:4px;margin-bottom:16px;font-size:12px;background:' + c.bg + ';border-left:none';
+        preview.style.cssText = base + 'background:' + c.bg + ';border-left:none';
       } else if (selectedMode === 'border') {
-        preview.style.cssText = 'padding:8px;border-radius:4px;margin-bottom:16px;font-size:12px;background:transparent;border-left:4px solid ' + c.border;
+        preview.style.cssText = base + 'background:transparent;border-left:4px solid ' + c.border;
       } else {
-        preview.style.cssText = 'padding:8px;border-radius:4px;margin-bottom:16px;font-size:12px;background:transparent;border-left:none';
+        preview.style.cssText = base + 'background:transparent;border-left:none';
       }
       preview.innerHTML = 'Apercu du style <span style="display:inline-block;background:' + c.badge
         + ';color:white;font-size:10px;font-weight:bold;padding:1px 5px;border-radius:3px;margin-left:6px">\u26A0 Alert\u00e9</span>';
@@ -244,7 +291,7 @@
 
     // Sauvegarder
     overlay.querySelector('#hfr-rf-save').addEventListener('click', function () {
-      savePrefs({ mode: selectedMode, color: selectedColor });
+      savePrefs({ mode: selectedMode, color: selectedColor, debug: selectedDebug });
       overlay.remove();
       location.reload();
     });
@@ -626,26 +673,40 @@
   }
 
   // --- Widget de statut ---
+  // En mode normal : invisible sauf alertes ou erreurs (disparait apres quelques secondes)
+  // En mode debug : visible en permanence avec progression du scan
 
-  function createWidget() {
-    var el = document.createElement('div');
-    el.className = 'hfr-redflag-status';
-    el.textContent = 'RedFlag: chargement...';
-    document.body.appendChild(el);
-    return el;
+  var _widget = null;
+
+  function getWidget() {
+    if (!_widget) {
+      _widget = document.createElement('div');
+      _widget.className = 'hfr-redflag-status';
+      _widget.style.display = 'none';
+      document.body.appendChild(_widget);
+    }
+    return _widget;
   }
 
-  function updateWidget(el, checked, flagged, total) {
-    el.textContent = 'RedFlag: ' + checked + '/' + total
-      + ' (' + flagged + ' alert\u00e9' + (flagged > 1 ? 's' : '') + ')';
+  function showWidget(text, autoHideMs) {
+    var el = getWidget();
+    el.textContent = text;
+    el.style.display = 'block';
+    el.style.opacity = '1';
+    if (autoHideMs) {
+      setTimeout(function () {
+        el.style.transition = 'opacity 0.5s';
+        el.style.opacity = '0';
+        setTimeout(function () { el.style.display = 'none'; }, 500);
+      }, autoHideMs);
+    }
   }
 
-  function dismissWidget(el) {
-    setTimeout(function () {
-      el.style.transition = 'opacity 0.5s';
-      el.style.opacity = '0';
-      setTimeout(function () { el.remove(); }, 500);
-    }, 3000);
+  function hideWidget() {
+    var el = getWidget();
+    el.style.transition = 'opacity 0.5s';
+    el.style.opacity = '0';
+    setTimeout(function () { el.style.display = 'none'; }, 500);
   }
 
   // =====================================================================
@@ -663,8 +724,10 @@
     if (numreponses.length === 0) return;
 
     var prefs = loadPrefs();
+    var isDebug = prefs.debug;
     GM_addStyle(buildCSS(prefs));
-    var widget = createWidget();
+
+    if (isDebug) showWidget('RedFlag: chargement...');
 
     // Phase 1 : cache local
     var cache = pruneCache(loadCache());
@@ -692,14 +755,17 @@
     }
 
     if (toFetch.length === 0) {
-      widget.textContent = 'RedFlag: ' + flagged + ' alert\u00e9' + (flagged > 1 ? 's' : '');
-      dismissWidget(widget);
+      if (flagged > 0) {
+        showWidget('RedFlag: ' + flagged + ' alert\u00e9' + (flagged > 1 ? 's' : ''), 5000);
+      } else if (isDebug) {
+        showWidget('RedFlag: aucune alerte', 3000);
+      }
       saveCache(cache);
       return;
     }
 
     // Phase 2 : cache Worker (shared)
-    widget.textContent = 'RedFlag: interrogation du cache...';
+    if (isDebug) showWidget('RedFlag: interrogation du cache...');
 
     fetchRemoteStatuses(page.cat, toFetch).then(function (remote) {
       var toScan = [];
@@ -719,14 +785,17 @@
       console.log(PREFIX, flagged, 'alertes apres cache Worker (shared),', toScan.length, 'a scanner');
 
       if (toScan.length === 0) {
-        widget.textContent = 'RedFlag: ' + flagged + ' alert\u00e9' + (flagged > 1 ? 's' : '');
+        if (flagged > 0) {
+          showWidget('RedFlag: ' + flagged + ' alert\u00e9' + (flagged > 1 ? 's' : ''), 5000);
+        } else if (isDebug) {
+          showWidget('RedFlag: aucune alerte', 3000);
+        }
         saveCache(cache);
-        dismissWidget(widget);
         return;
       }
 
       // Phase 3 : scan modo.php
-      widget.textContent = 'RedFlag: scan modo.php...';
+      if (isDebug) showWidget('RedFlag: scan modo.php...');
       var queue = new ThrottledQueue(CONFIG.throttleDelay);
       var checked = 0;
       var results = [];
@@ -740,7 +809,10 @@
               results.push({ cat: page.cat, post: page.post, numreponse: num, flagged: r.flagged });
               if (r.flagged) { flagged++; markPostFlagged(num); console.log(PREFIX, 'ALERTE:', num); }
             }
-            updateWidget(widget, checked, flagged, toScan.length);
+            if (isDebug) {
+              showWidget('RedFlag: ' + checked + '/' + toScan.length
+                + ' (' + flagged + ' alert\u00e9' + (flagged > 1 ? 's' : '') + ')');
+            }
           });
         });
       });
@@ -757,8 +829,13 @@
         }
 
         console.log(PREFIX, 'Termine.', flagged, 'alertes sur', numreponses.length, 'posts');
-        if (flagged === 0) widget.textContent = 'RedFlag: aucune alerte';
-        dismissWidget(widget);
+        if (flagged > 0) {
+          showWidget('RedFlag: ' + flagged + ' alert\u00e9' + (flagged > 1 ? 's' : ''), 5000);
+        } else if (isDebug) {
+          showWidget('RedFlag: aucune alerte', 3000);
+        } else {
+          hideWidget();
+        }
       });
     });
   }

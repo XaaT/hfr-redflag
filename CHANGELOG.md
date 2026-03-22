@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.0 — 2026-03-22
+
+### Nouveautés
+- Widget discret : invisible par défaut, apparaît 5s uniquement si alertes trouvées ou erreur
+- Mode debug : toggle dans les préférences, affiche la progression du scan comme avant
+- Sélecteur de couleur personnalisée (color picker) en plus des 5 presets
+- Presets couleurs revus : rouge, bleu, vert, violet, sombre
+
+### Corrections
+- Suppression des couleurs orange et jaune (trop similaires), remplacées par vert
+
 ## 0.6.1 — 2026-03-22
 
 ### Corrections

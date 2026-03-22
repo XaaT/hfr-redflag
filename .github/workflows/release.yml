@@ -22,8 +22,8 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
 
           # Extraire la section de la version depuis CHANGELOG.md
-          # Capture tout entre ## {version} et le prochain ## (ou fin de fichier)
-          CHANGELOG=$(awk "/^## ${VERSION}/,/^## [0-9]/" CHANGELOG.md | head -n -1 | tail -n +2)
+          # Capture tout entre "## {version}" et le prochain "## " (ou fin de fichier)
+          CHANGELOG=$(awk "/^## ${VERSION}( |$)/,/^## [0-9]/" CHANGELOG.md | head -n -1 | tail -n +2)
 
           # Detecter si c'est une grosse release (plusieurs sous-sections ###)
           SECTION_COUNT=$(echo "$CHANGELOG" | grep -c "^### " || true)

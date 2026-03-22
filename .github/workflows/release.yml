@@ -44,7 +44,7 @@ jobs:
             BODY=$(echo "$CHANGELOG" | grep "^- " | sed 's/^- /[*] /' || true)
           fi
 
-          BBCODE=$(printf '%s\n%s\n\n%s' "$HEADER" "$BODY" "$FOOTER")
+          BBCODE=$(printf '%s\n\n%s\n\n%s' "$HEADER" "$BODY" "$FOOTER")
 
           # Sauvegarder en multi-line output
           {

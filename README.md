@@ -43,13 +43,14 @@ Active le widget de progression permanent en bas à droite (progression du scan,
 ## Architecture
 
 ```
-Navigateur (Tampermonkey)             Cloudflare (cache partagé)
-
-  1. Cache local
-  2. GET /check ------------------->  CF Worker + D1 (SQLite edge)
-  3. Scan modo.php
-  4. POST /report ----------------->  Stocke les résultats
-  5. Affichage
+ Navigateur (Tampermonkey)              Cloudflare (cache partagé)
+┌───────────────────────────┐    ┌────────────────────────────┐
+│  1. Cache local            │    │  CF Worker + D1             │
+│  2. GET /check ────────────┼───▶│  (SQLite edge)              │
+│  3. Scan modo.php          │    │                             │
+│  4. POST /report ──────────┼───▶│  Stocke les résultats       │
+│  5. Affichage              │    └────────────────────────────┘
+└───────────────────────────┘
 ```
 
 - **Cache local** : localStorage, TTL 1h pour les "pas alerté", permanent pour les alertés

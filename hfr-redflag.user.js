@@ -2,7 +2,7 @@
 // @name         [HFR] RedFlag
 // @namespace    https://github.com/XaaT/hfr-redflag
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=hardware.fr
-// @version      0.7.2
+// @version      0.7.3
 // @description  Met en evidence les posts alertes a la moderation sur forum.hardware.fr
 // @author       xat
 // @match        https://forum.hardware.fr/forum2.php*
@@ -23,6 +23,7 @@
 // @license      MIT
 // ==/UserScript==
 // --- Changelog ---
+//   0.7.3 - Fix color picker : bordure visible, reset gradient quand preset choisi
 //   0.7.2 - 6 presets classiques + fix color picker (garde le "+" quand selectionne)
 //   0.7.1 - Fix color picker : gradient arc-en-ciel + indicateur "+" + preset sombre revu
 //   0.7.0 - Widget discret (alertes/erreurs uniquement) + mode debug + color picker custom
@@ -234,9 +235,17 @@
     var colorsDiv = document.getElementById('hfr-rf-colors');
     var allSwatches = [];
 
+    var _pickerWrap = null, _pickerLabel = null;
     function selectSwatch(key) {
       selectedColor = key;
       allSwatches.forEach(function (s) { s.style.borderColor = 'transparent'; });
+      // Reset le picker au gradient si on choisit un preset
+      if (key.charAt(0) !== '#' && _pickerWrap) {
+        _pickerWrap.style.background = 'conic-gradient(red,yellow,lime,cyan,blue,magenta,red)';
+        _pickerWrap.style.borderColor = '#ccc';
+        _pickerLabel.textContent = '+';
+        _pickerLabel.style.fontSize = '18px';
+      }
     }
 
     Object.keys(COLORS).forEach(function (key) {
@@ -260,7 +269,7 @@
     var pickerWrap = document.createElement('div');
     pickerWrap.title = 'Couleur personnalis\u00e9e';
     pickerWrap.style.cssText = 'width:32px;height:32px;border-radius:50%;cursor:pointer;border:3px solid '
-      + (isCustom ? '#333' : 'transparent')
+      + (isCustom ? '#333' : '#ccc')
       + ';background:conic-gradient(red,yellow,lime,cyan,blue,magenta,red);position:relative;overflow:hidden';
     var colorInput = document.createElement('input');
     colorInput.type = 'color';
@@ -288,6 +297,8 @@
       pickerLabel.style.fontSize = '14px';
     }
 
+    _pickerWrap = pickerWrap;
+    _pickerLabel = pickerLabel;
     colorsDiv.appendChild(pickerWrap);
 
     function updatePreview() {

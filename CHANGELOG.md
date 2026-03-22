@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.3 — 2026-03-22
+
+### Corrections
+- Color picker : bordure gris clair par défaut (plus de débordement visuel)
+- Sélection d'un preset remet le picker en mode gradient arc-en-ciel
+
 ## 0.7.2 — 2026-03-22
 
 ### Corrections

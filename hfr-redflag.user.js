@@ -2,7 +2,7 @@
 // @name         [HFR] RedFlag
 // @namespace    https://github.com/XaaT/hfr-redflag
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=hardware.fr
-// @version      0.7.1
+// @version      0.7.2
 // @description  Met en evidence les posts alertes a la moderation sur forum.hardware.fr
 // @author       xat
 // @match        https://forum.hardware.fr/forum2.php*
@@ -23,6 +23,7 @@
 // @license      MIT
 // ==/UserScript==
 // --- Changelog ---
+//   0.7.2 - 6 presets classiques + fix color picker (garde le "+" quand selectionne)
 //   0.7.1 - Fix color picker : gradient arc-en-ciel + indicateur "+" + preset sombre revu
 //   0.7.0 - Widget discret (alertes/erreurs uniquement) + mode debug + color picker custom
 //   0.6.1 - Fix report > 100 items : decoupe en chunks + URL update fix
@@ -135,10 +136,11 @@
 
   var COLORS = {
     rouge:  { bg: '#ffcccc', border: '#cc0000', badge: '#cc0000' },
-    bleu:   { bg: '#cce0ff', border: '#0066cc', badge: '#0066cc' },
+    orange: { bg: '#ffe0cc', border: '#dd6600', badge: '#dd6600' },
+    jaune:  { bg: '#fff5cc', border: '#bb8800', badge: '#bb8800' },
     vert:   { bg: '#ccf2cc', border: '#009900', badge: '#009900' },
-    violet: { bg: '#e8ccff', border: '#7700cc', badge: '#7700cc' },
-    sombre: { bg: '#3d1111', border: '#e84040', badge: '#e84040' }
+    bleu:   { bg: '#cce0ff', border: '#0066cc', badge: '#0066cc' },
+    violet: { bg: '#e8ccff', border: '#7700cc', badge: '#7700cc' }
   };
 
   var DEFAULT_PREFS = { mode: 'background', color: 'rouge', debug: false };
@@ -276,14 +278,14 @@
       selectSwatch(colorInput.value);
       pickerWrap.style.borderColor = '#333';
       pickerWrap.style.background = colorInput.value;
-      pickerLabel.textContent = '';
+      pickerLabel.style.fontSize = '14px';
       updatePreview();
     });
 
-    // Si une couleur custom etait deja selectionnee, afficher sa couleur
+    // Si une couleur custom etait deja selectionnee, afficher sa couleur avec le +
     if (isCustom) {
       pickerWrap.style.background = selectedColor;
-      pickerLabel.textContent = '';
+      pickerLabel.style.fontSize = '14px';
     }
 
     colorsDiv.appendChild(pickerWrap);

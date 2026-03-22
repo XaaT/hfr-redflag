@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.2 — 2026-03-22
+
+### Corrections
+- 6 presets classiques : rouge, orange, jaune, vert, bleu, violet (suppression du preset "sombre")
+- Color picker custom : garde le "+" visible quand une couleur perso est sélectionnée
+
 ## 0.7.1 — 2026-03-22
 
 ### Corrections

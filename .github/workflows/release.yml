@@ -33,18 +33,18 @@ jobs:
           SECTION_COUNT=$(echo "$CHANGELOG" | grep -c "^### " || true)
 
           # Header commun
-          HEADER="[b][url=https://github.com/XaaT/hfr-redflag]RedFlag[/url] v${VERSION}[/b]"
-          FOOTER="[url=https://github.com/XaaT/hfr-redflag/raw/refs/heads/master/hfr-redflag.user.js]Installer / mettre a jour[/url]"
+          HEADER="[:peronnelle]  [b][url=https://github.com/XaaT/hfr-redflag]RedFlag[/url] v${VERSION}[/b]"
+          FOOTER="[:pow-wow] [url=https://github.com/XaaT/hfr-redflag/raw/refs/heads/master/hfr-redflag.user.js]Installer / mettre a jour[/url]"
 
           if [ "$SECTION_COUNT" -gt 1 ]; then
-            # Format C : convertir ### en [b]...[/b], garder les items
-            BODY=$(echo "$CHANGELOG" | sed 's/^### \(.*\)/\n[b]\1[\/b]/' | grep -v '^$' || true)
+            # Format C : convertir ### en [b]...[/b], items en [*]
+            BODY=$(echo "$CHANGELOG" | sed 's/^### \(.*\)/\n[b]\1[\/b]/' | sed 's/^- /[*] /' | grep -v '^$' || true)
           else
-            # Format A : juste les items
-            BODY=$(echo "$CHANGELOG" | grep "^- " || true)
+            # Format A : juste les items en [*]
+            BODY=$(echo "$CHANGELOG" | grep "^- " | sed 's/^- /[*] /' || true)
           fi
 
-          BBCODE=$(printf '%s\n\n%s\n\n%s' "$HEADER" "$BODY" "$FOOTER")
+          BBCODE=$(printf '%s\n%s\n\n%s' "$HEADER" "$BODY" "$FOOTER")
 
           # Sauvegarder en multi-line output
           {

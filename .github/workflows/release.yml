@@ -22,35 +22,29 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
 
           # Extraire la section de la version depuis CHANGELOG.md
-          # Capture tout entre "## {version}" et le prochain "## " (ou fin de fichier)
-          CHANGELOG=$(awk "/^## ${VERSION}( |$)/,/^## [0-9]/" CHANGELOG.md | head -n -1 | tail -n +2)
+          # On prend tout entre "## VERSION" et le prochain "## " (exclus)
+          CHANGELOG=$(sed -n "/^## ${VERSION}/,/^## /p" CHANGELOG.md | sed '1d;$d')
+
+          echo "--- Changelog extrait ---"
+          echo "$CHANGELOG"
+          echo "--- Fin ---"
 
           # Detecter si c'est une grosse release (plusieurs sous-sections ###)
           SECTION_COUNT=$(echo "$CHANGELOG" | grep -c "^### " || true)
 
+          # Header commun
+          HEADER="[b][url=https://github.com/XaaT/hfr-redflag]RedFlag[/url] v${VERSION}[/b]"
+          FOOTER="[url=https://github.com/XaaT/hfr-redflag/raw/refs/heads/master/hfr-redflag.user.js]Installer / mettre a jour[/url]"
+
           if [ "$SECTION_COUNT" -gt 1 ]; then
-            # Format C : structuré avec sous-sections
-            BBCODE="[b][url=https://github.com/XaaT/hfr-redflag]RedFlag[/url] v${VERSION}[/b]"
-            BBCODE="$BBCODE"$'\n'
-
-            # Convertir les ### en [b]...[/b] et les - en items
-            FORMATTED=$(echo "$CHANGELOG" | sed 's/^### \(.*\)/\n[b]\1[\/b]/' | sed 's/^- /- /' | grep -v '^$' || true)
-            BBCODE="$BBCODE"$'\n'"$FORMATTED"
+            # Format C : convertir ### en [b]...[/b], garder les items
+            BODY=$(echo "$CHANGELOG" | sed 's/^### \(.*\)/\n[b]\1[\/b]/' | grep -v '^$' || true)
           else
-            # Format A : minimaliste
-            BBCODE="[b][url=https://github.com/XaaT/hfr-redflag]RedFlag[/url] v${VERSION}[/b]"
-            BBCODE="$BBCODE"$'\n'
-
-            # Juste les items sans le titre de section
-            ITEMS=$(echo "$CHANGELOG" | grep "^- " || true)
-            BBCODE="$BBCODE"$'\n'"$ITEMS"
+            # Format A : juste les items
+            BODY=$(echo "$CHANGELOG" | grep "^- " || true)
           fi
 
-          # Ajouter le lien d'installation
-          BBCODE="$BBCODE"$'\n'$'\n'"[url=https://github.com/XaaT/hfr-redflag/raw/refs/heads/master/hfr-redflag.user.js]Installer / mettre a jour[/url]"
-
-          # Sauvegarder pour la release
-          echo "$BBCODE" > bbcode.txt
+          BBCODE=$(printf '%s\n\n%s\n\n%s' "$HEADER" "$BODY" "$FOOTER")
 
           # Sauvegarder en multi-line output
           {

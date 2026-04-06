@@ -2,7 +2,7 @@
 // @name         [HFR] RedFlag
 // @namespace    https://github.com/XaaT/hfr-redflag
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=hardware.fr
-// @version      0.7.3
+// @version      0.7.4
 // @description  Met en evidence les posts alertes a la moderation sur forum.hardware.fr
 // @author       xat
 // @match        https://forum.hardware.fr/forum2.php*
@@ -23,6 +23,7 @@
 // @license      MIT
 // ==/UserScript==
 // --- Changelog ---
+//   0.7.4 - Sauvegarde progressive : cache local toutes les 10 posts, report Worker toutes les 20, beforeunload
 //   0.7.3 - Fix color picker : bordure visible, reset gradient quand preset choisi
 //   0.7.2 - 6 presets classiques + fix color picker (garde le "+" quand selectionne)
 //   0.7.1 - Fix color picker : gradient arc-en-ciel + indicateur "+" + preset sombre revu
@@ -71,7 +72,11 @@
 
     // Retry queue
     retryKey: 'hfr_redflag_failed_reports',
-    retryMaxItems: 500
+    retryMaxItems: 500,
+
+    // Sauvegarde progressive
+    saveBatch: 10,             // saveCache() toutes les N posts scannes
+    reportBatch: 20            // reportToWorker() toutes les N resultats
   };
 
   var PREFIX = '[HFR RedFlag]';
@@ -828,11 +833,23 @@
         return;
       }
 
-      // Phase 3 : scan modo.php
+      // Phase 3 : scan modo.php (sauvegarde progressive)
       if (isDebug) showWidget('RedFlag: scan modo.php...');
       var queue = new ThrottledQueue(CONFIG.throttleDelay);
       var checked = 0;
       var results = [];
+      var unreported = [];
+
+      // Sauvegarder en urgence si l'utilisateur quitte la page
+      function onBeforeUnload() {
+        saveCache(cache);
+        if (unreported.length > 0) {
+          var existing = loadRetryQueue();
+          saveRetryQueue(existing.concat(unreported));
+          console.log(PREFIX, 'beforeunload:', unreported.length, 'resultats sauves en retry queue');
+        }
+      }
+      window.addEventListener('beforeunload', onBeforeUnload);
 
       var promises = toScan.map(function (num) {
         return queue.add(function () {
@@ -840,9 +857,23 @@
             checked++;
             if (r) {
               cache[makeCacheKey(page.cat, num)] = { flagged: r.flagged, checkedAt: Date.now() };
-              results.push({ cat: page.cat, post: page.post, numreponse: num, flagged: r.flagged });
+              var entry = { cat: page.cat, post: page.post, numreponse: num, flagged: r.flagged };
+              results.push(entry);
+              unreported.push(entry);
               if (r.flagged) { flagged++; markPostFlagged(num); console.log(PREFIX, 'ALERTE:', num); }
             }
+
+            // Sauvegarde cache progressive (toutes les N posts)
+            if (checked % CONFIG.saveBatch === 0) {
+              saveCache(cache);
+            }
+
+            // Report Worker progressif (toutes les N resultats)
+            if (unreported.length >= CONFIG.reportBatch) {
+              var batch = unreported.splice(0);
+              reportToWorker(batch);
+            }
+
             if (isDebug) {
               showWidget('RedFlag: ' + checked + '/' + toScan.length
                 + ' (' + flagged + ' alert\u00e9' + (flagged > 1 ? 's' : '') + ')');
@@ -852,17 +883,19 @@
       });
 
       Promise.all(promises).then(function () {
+        window.removeEventListener('beforeunload', onBeforeUnload);
         saveCache(cache);
 
-        // Phase 4 : report au Worker
-        if (results.length > 0) {
-          console.log(PREFIX, 'Report:', results.length, 'resultats');
-          reportToWorker(results).then(function (resp) {
+        // Phase 4 : report final au Worker (resultats non encore envoyes)
+        if (unreported.length > 0) {
+          console.log(PREFIX, 'Report final:', unreported.length, 'resultats');
+          reportToWorker(unreported).then(function (resp) {
             if (resp && resp.ok) console.log(PREFIX, 'Worker OK:', resp.submitted, 'mis a jour');
           });
         }
 
-        console.log(PREFIX, 'Termine.', flagged, 'alertes sur', numreponses.length, 'posts');
+        console.log(PREFIX, 'Termine.', flagged, 'alertes sur', numreponses.length, 'posts',
+          '(' + results.length + ' scannes)');
         if (flagged > 0) {
           showWidget('RedFlag: ' + flagged + ' alert\u00e9' + (flagged > 1 ? 's' : ''), 5000);
         } else if (isDebug) {

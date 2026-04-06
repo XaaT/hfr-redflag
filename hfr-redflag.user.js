@@ -697,14 +697,15 @@
       + '  border-radius: 3px; margin-top: 4px;'
       + '}';
 
-    // Bouton re-check (hover)
+    // Bouton re-check (a gauche du lien d'alerte, visible au hover du post)
     css += '.hfr-redflag-recheck {'
-      + '  display: none; cursor: pointer; font-size: 14px;'
-      + '  margin-top: 4px; opacity: 0.4; transition: opacity 0.2s;'
-      + '  text-align: center;'
+      + '  cursor: pointer; font-size: 16px;'
+      + '  margin-right: 2px; opacity: 0; transition: opacity 0.2s;'
+      + '  text-decoration: none; color: inherit;'
+      + '  position: relative; top: -2px;'
       + '}'
-      + 'td.messCase1:hover .hfr-redflag-recheck { display: block; }'
-      + '.hfr-redflag-recheck:hover { opacity: 1; }';
+      + 'table.messagetable:hover .hfr-redflag-recheck { opacity: 0.4; }'
+      + '.hfr-redflag-recheck:hover { opacity: 1 !important; }';
 
     // Widget de statut
     css += '.hfr-redflag-status {'
@@ -732,17 +733,23 @@
     }
   }
 
-  // Bouton re-check (visible au hover si pref activee)
+  // Bouton re-check (visible au hover, a cote du lien d'alerte)
   function addRecheckButtons(page, cache) {
     document.querySelectorAll('td.messCase1 a[name^="t"]').forEach(function (anchor) {
       var num = parseInt(anchor.name.substring(1), 10);
       if (isNaN(num)) return;
-      var cell = anchor.closest('td.messCase1');
-      if (!cell || cell.querySelector('.hfr-redflag-recheck')) return;
+      var table = anchor.closest('table.messagetable');
+      if (!table || table.querySelector('.hfr-redflag-recheck')) return;
 
-      var btn = document.createElement('div');
+      // Trouver le lien d'alerte (modo.php) dans la toolbar du post
+      var alertLink = table.querySelector('td.messCase2 a[href*="modo.php"]');
+      if (!alertLink) return;
+      var toolbar = alertLink.parentNode;
+
+      var btn = document.createElement('a');
       btn.className = 'hfr-redflag-recheck';
-      btn.title = 'Re-v\u00e9rifier ce post';
+      btn.href = '#';
+      btn.title = 'Re-v\u00e9rifier ce post (RedFlag)';
       btn.textContent = '\u21BB';
       btn.addEventListener('click', function (e) {
         e.preventDefault();
@@ -762,7 +769,7 @@
           setTimeout(function () { btn.textContent = '\u21BB'; btn.style.color = ''; btn.style.pointerEvents = ''; }, 3000);
         });
       });
-      cell.appendChild(btn);
+      toolbar.insertBefore(btn, alertLink);
     });
   }
 

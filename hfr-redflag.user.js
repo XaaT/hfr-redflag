@@ -2,7 +2,7 @@
 // @name         [HFR] RedFlag
 // @namespace    https://github.com/XaaT/hfr-redflag
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=hardware.fr
-// @version      0.7.8
+// @version      0.8.0
 // @description  Met en evidence les posts alertes a la moderation sur forum.hardware.fr
 // @author       xat
 // @match        https://forum.hardware.fr/forum2.php*
@@ -23,6 +23,7 @@
 // @license      MIT
 // ==/UserScript==
 // --- Changelog ---
+//   0.8.0 - TTL adaptatif (15min-24h selon age du post) + renommage force check en debug
 //   0.7.8 - Fix detection : textarea seul, multi-langue, corrige faux negatifs sur "rejoindre" et faux positifs EN
 //   0.7.7 - Fix detection : marqueur "UNIQUEMENT" au lieu de textarea (evite faux negatifs sur alertes en attente)
 //   0.7.6 - Fix force check : placement a gauche du /!\, alignement, pas de decalage au hover
@@ -65,8 +66,16 @@
 
     // Cache local (localStorage)
     cacheKey: 'hfr_redflag_cache',
-    cacheTtl: 3600000,           // 1h pour les "pas alerte"
     cacheMaxEntries: 5000,       // nettoyage au-dela
+    // TTL adaptatif : plus le post est vieux, plus le TTL est long
+    cacheTtlTiers: [
+      { maxAge:   3600000, ttl:   900000 },  // post < 1h    → TTL 15min
+      { maxAge:  86400000, ttl:  3600000 },  // post < 24h   → TTL 1h
+      { maxAge: 604800000, ttl: 14400000 },  // post < 7j    → TTL 4h
+      { maxAge: 2592000000, ttl: 43200000 }, // post < 30j   → TTL 12h
+      { maxAge: Infinity,  ttl: 86400000 }   // post > 30j   → TTL 24h
+    ],
+    cacheTtlDefault: 3600000,    // fallback 1h si age inconnu
 
     // Circuit breaker
     cbKey: 'hfr_redflag_circuit',
@@ -210,7 +219,7 @@
       + '<div id="hfr-rf-colors" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:16px"></div>'
       + '<div id="hfr-rf-preview" style="padding:8px;border-radius:4px;margin-bottom:16px;font-size:12px">Apercu</div>'
       + '<div style="margin-bottom:8px"><label style="cursor:pointer"><input type="checkbox" id="hfr-rf-debug"> Mode debug (widget de progression permanent)</label></div>'
-      + '<div style="margin-bottom:16px"><label style="cursor:pointer"><input type="checkbox" id="hfr-rf-forcecheck"> Bouton re-verifier sur chaque post (hover)</label></div>'
+      + '<div style="margin-bottom:16px"><label style="cursor:pointer"><input type="checkbox" id="hfr-rf-forcecheck"> Debug : bouton re-verifier sur chaque post</label></div>'
       + '<div style="display:flex;gap:8px;justify-content:flex-end">'
       + '<button id="hfr-rf-cancel" style="padding:6px 16px;border:1px solid #ccc;border-radius:4px;background:white;cursor:pointer">Annuler</button>'
       + '<button id="hfr-rf-save" style="padding:6px 16px;border:none;border-radius:4px;background:#cc0000;color:white;cursor:pointer;font-weight:bold">Enregistrer</button>'
@@ -438,13 +447,38 @@
     return cat + ':' + numreponse;
   }
 
+  // Calcule le TTL adaptatif en fonction de l'age du post
+  function getTtl(pageAgeMs) {
+    if (pageAgeMs === null || pageAgeMs === undefined) return CONFIG.cacheTtlDefault;
+    for (var i = 0; i < CONFIG.cacheTtlTiers.length; i++) {
+      if (pageAgeMs < CONFIG.cacheTtlTiers[i].maxAge) return CONFIG.cacheTtlTiers[i].ttl;
+    }
+    return CONFIG.cacheTtlDefault;
+  }
+
+  // Age de la page : parse la date du premier post dans le DOM
+  // Format HFR : "Posté le DD-MM-YYYY à HH:MM:SS" ou "Posted on DD-MM-YYYY at HH:MM:SS"
+  function getPageAge() {
+    var el = document.querySelector('td.messCase2 div.toolbar div.left');
+    if (!el) return null;
+    var match = el.textContent.match(/(\d{2})-(\d{2})-(\d{4})\s+\S+\s+(\d{2}):(\d{2}):(\d{2})/);
+    if (!match) return null;
+    var d = new Date(match[3] + '-' + match[2] + '-' + match[1] + 'T' + match[4] + ':' + match[5] + ':' + match[6]);
+    if (isNaN(d.getTime())) return null;
+    return Date.now() - d.getTime();
+  }
+
+  var _pageAge = null;
+  var _pageTtl = CONFIG.cacheTtlDefault;
+
   function isCacheFresh(entry) {
     if (!entry) return false;
     if (entry.flagged) return true;
-    return (Date.now() - entry.checkedAt) < CONFIG.cacheTtl;
+    return (Date.now() - entry.checkedAt) < _pageTtl;
   }
 
   // Nettoyer les entrees perimees pour eviter la croissance infinie
+  // Utilise le TTL max (24h) pour le nettoyage global
   function pruneCache(cache) {
     var keys = Object.keys(cache);
     if (keys.length <= CONFIG.cacheMaxEntries) return cache;
@@ -452,10 +486,11 @@
     console.log(PREFIX, 'Nettoyage cache:', keys.length, 'entrees');
     var pruned = {};
     var now = Date.now();
+    var maxTtl = CONFIG.cacheTtlTiers[CONFIG.cacheTtlTiers.length - 1].ttl;
     keys.forEach(function (key) {
       var entry = cache[key];
-      // Garder les flagged (permanents) et les frais
-      if (entry.flagged || (now - entry.checkedAt) < CONFIG.cacheTtl) {
+      // Garder les flagged (permanents) et ceux de moins de 24h
+      if (entry.flagged || (now - entry.checkedAt) < maxTtl) {
         pruned[key] = entry;
       }
     });
@@ -846,6 +881,11 @@
     GM_addStyle(buildCSS(prefs));
 
     if (isDebug) showWidget('RedFlag: chargement...');
+
+    // TTL adaptatif : calcule a partir de l'age du premier post de la page
+    _pageAge = getPageAge();
+    _pageTtl = getTtl(_pageAge);
+    if (isDebug) console.log(PREFIX, 'Page age:', _pageAge ? Math.round(_pageAge / 3600000) + 'h' : '?', '→ TTL:', Math.round(_pageTtl / 60000) + 'min');
 
     // Phase 1 : cache local
     var cache = pruneCache(loadCache());

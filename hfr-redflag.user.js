@@ -2,7 +2,7 @@
 // @name         [HFR] RedFlag
 // @namespace    https://github.com/XaaT/hfr-redflag
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=hardware.fr
-// @version      0.7.6
+// @version      0.7.7
 // @description  Met en evidence les posts alertes a la moderation sur forum.hardware.fr
 // @author       xat
 // @match        https://forum.hardware.fr/forum2.php*
@@ -23,6 +23,7 @@
 // @license      MIT
 // ==/UserScript==
 // --- Changelog ---
+//   0.7.7 - Fix detection : marqueur "UNIQUEMENT" au lieu de textarea (evite faux negatifs sur alertes en attente)
 //   0.7.6 - Fix force check : placement a gauche du /!\, alignement, pas de decalage au hover
 //   0.7.5 - Force check : bouton re-verifier par post (hover, opt-in) + re-scanner la page (menu TM)
 //   0.7.4 - Sauvegarde progressive : cache local toutes les 10 posts, report Worker toutes les 20, beforeunload
@@ -631,11 +632,12 @@
           return resolve(null);
         }
         var html = xhr.responseText;
-        // Formulaire d'alerte present = pas alerte
-        if (html.indexOf('<textarea') !== -1 || html.indexOf('Raison de la demande') !== -1) {
+        // Marqueur unique du formulaire "pas encore alerte"
+        // Si ce texte est present, le post n'a jamais ete alerte
+        // Tout autre cas (alerte traitee, en attente, formulaire pour rejoindre) = alerte
+        if (html.indexOf('UNIQUEMENT') !== -1) {
           return resolve({ numreponse: numreponse, flagged: false });
         }
-        // Tout autre cas = alerte (detection binaire : pas le formulaire = alerte)
         resolve({ numreponse: numreponse, flagged: true });
       };
 

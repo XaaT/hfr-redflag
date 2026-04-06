@@ -2,7 +2,7 @@
 // @name         [HFR] RedFlag
 // @namespace    https://github.com/XaaT/hfr-redflag
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=hardware.fr
-// @version      0.7.5
+// @version      0.7.6
 // @description  Met en evidence les posts alertes a la moderation sur forum.hardware.fr
 // @author       xat
 // @match        https://forum.hardware.fr/forum2.php*
@@ -23,6 +23,7 @@
 // @license      MIT
 // ==/UserScript==
 // --- Changelog ---
+//   0.7.6 - Fix force check : placement a gauche du /!\, alignement, pas de decalage au hover
 //   0.7.5 - Force check : bouton re-verifier par post (hover, opt-in) + re-scanner la page (menu TM)
 //   0.7.4 - Sauvegarde progressive : cache local toutes les 10 posts, report Worker toutes les 20, beforeunload
 //   0.7.3 - Fix color picker : bordure visible, reset gradient quand preset choisi

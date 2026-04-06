@@ -2,7 +2,7 @@
 // @name         [HFR] RedFlag
 // @namespace    https://github.com/XaaT/hfr-redflag
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=hardware.fr
-// @version      0.7.4
+// @version      0.7.5
 // @description  Met en evidence les posts alertes a la moderation sur forum.hardware.fr
 // @author       xat
 // @match        https://forum.hardware.fr/forum2.php*
@@ -23,6 +23,7 @@
 // @license      MIT
 // ==/UserScript==
 // --- Changelog ---
+//   0.7.5 - Force check : bouton re-verifier par post (hover, opt-in) + re-scanner la page (menu TM)
 //   0.7.4 - Sauvegarde progressive : cache local toutes les 10 posts, report Worker toutes les 20, beforeunload
 //   0.7.3 - Fix color picker : bordure visible, reset gradient quand preset choisi
 //   0.7.2 - 6 presets classiques + fix color picker (garde le "+" quand selectionne)
@@ -149,13 +150,14 @@
     violet: { bg: '#e8ccff', border: '#7700cc', badge: '#7700cc' }
   };
 
-  var DEFAULT_PREFS = { mode: 'background', color: 'rouge', debug: false };
+  var DEFAULT_PREFS = { mode: 'background', color: 'rouge', debug: false, forceCheck: false };
 
   function loadPrefs() {
     return {
       mode: GM_getValue('mode', DEFAULT_PREFS.mode),
       color: GM_getValue('color', DEFAULT_PREFS.color),
-      debug: GM_getValue('debug', DEFAULT_PREFS.debug)
+      debug: GM_getValue('debug', DEFAULT_PREFS.debug),
+      forceCheck: GM_getValue('forceCheck', DEFAULT_PREFS.forceCheck)
     };
   }
 
@@ -163,6 +165,7 @@
     GM_setValue('mode', prefs.mode);
     GM_setValue('color', prefs.color);
     GM_setValue('debug', prefs.debug);
+    GM_setValue('forceCheck', prefs.forceCheck);
   }
 
   function hexToRgb(hex) {
@@ -203,7 +206,8 @@
       + '<div style="margin-bottom:12px"><b>Couleur :</b></div>'
       + '<div id="hfr-rf-colors" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:16px"></div>'
       + '<div id="hfr-rf-preview" style="padding:8px;border-radius:4px;margin-bottom:16px;font-size:12px">Apercu</div>'
-      + '<div style="margin-bottom:16px"><label style="cursor:pointer"><input type="checkbox" id="hfr-rf-debug"> Mode debug (widget de progression permanent)</label></div>'
+      + '<div style="margin-bottom:8px"><label style="cursor:pointer"><input type="checkbox" id="hfr-rf-debug"> Mode debug (widget de progression permanent)</label></div>'
+      + '<div style="margin-bottom:16px"><label style="cursor:pointer"><input type="checkbox" id="hfr-rf-forcecheck"> Bouton re-verifier sur chaque post (hover)</label></div>'
       + '<div style="display:flex;gap:8px;justify-content:flex-end">'
       + '<button id="hfr-rf-cancel" style="padding:6px 16px;border:1px solid #ccc;border-radius:4px;background:white;cursor:pointer">Annuler</button>'
       + '<button id="hfr-rf-save" style="padding:6px 16px;border:none;border-radius:4px;background:#cc0000;color:white;cursor:pointer;font-weight:bold">Enregistrer</button>'
@@ -214,12 +218,20 @@
     var selectedMode = prefs.mode;
     var selectedColor = prefs.color;
     var selectedDebug = prefs.debug;
+    var selectedForceCheck = prefs.forceCheck;
 
     // Init debug checkbox
     var debugCheckbox = document.getElementById('hfr-rf-debug');
     debugCheckbox.checked = selectedDebug;
     debugCheckbox.addEventListener('change', function () {
       selectedDebug = debugCheckbox.checked;
+    });
+
+    // Init forceCheck checkbox
+    var forceCheckbox = document.getElementById('hfr-rf-forcecheck');
+    forceCheckbox.checked = selectedForceCheck;
+    forceCheckbox.addEventListener('change', function () {
+      selectedForceCheck = forceCheckbox.checked;
     });
 
     // Generer les boutons de mode
@@ -330,7 +342,7 @@
 
     // Sauvegarder
     overlay.querySelector('#hfr-rf-save').addEventListener('click', function () {
-      savePrefs({ mode: selectedMode, color: selectedColor, debug: selectedDebug });
+      savePrefs({ mode: selectedMode, color: selectedColor, debug: selectedDebug, forceCheck: selectedForceCheck });
       overlay.remove();
       location.reload();
     });
@@ -685,6 +697,15 @@
       + '  border-radius: 3px; margin-top: 4px;'
       + '}';
 
+    // Bouton re-check (hover)
+    css += '.hfr-redflag-recheck {'
+      + '  display: none; cursor: pointer; font-size: 14px;'
+      + '  margin-top: 4px; opacity: 0.4; transition: opacity 0.2s;'
+      + '  text-align: center;'
+      + '}'
+      + 'td.messCase1:hover .hfr-redflag-recheck { display: block; }'
+      + '.hfr-redflag-recheck:hover { opacity: 1; }';
+
     // Widget de statut
     css += '.hfr-redflag-status {'
       + '  position: fixed; bottom: 8px; right: 8px;'
@@ -709,6 +730,53 @@
       badge.textContent = '\u26A0 Alert\u00e9';
       cell.appendChild(badge);
     }
+  }
+
+  // Bouton re-check (visible au hover si pref activee)
+  function addRecheckButtons(page, cache) {
+    document.querySelectorAll('td.messCase1 a[name^="t"]').forEach(function (anchor) {
+      var num = parseInt(anchor.name.substring(1), 10);
+      if (isNaN(num)) return;
+      var cell = anchor.closest('td.messCase1');
+      if (!cell || cell.querySelector('.hfr-redflag-recheck')) return;
+
+      var btn = document.createElement('div');
+      btn.className = 'hfr-redflag-recheck';
+      btn.title = 'Re-v\u00e9rifier ce post';
+      btn.textContent = '\u21BB';
+      btn.addEventListener('click', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        btn.textContent = '\u23F3';
+        btn.style.opacity = '0.5';
+        btn.style.pointerEvents = 'none';
+        recheckSinglePost(page.cat, page.post, num, cache, function (result) {
+          if (result && result.flagged) {
+            btn.textContent = '\u26A0';
+            btn.style.color = '#cc0000';
+          } else {
+            btn.textContent = '\u2713';
+            btn.style.color = '#090';
+          }
+          btn.style.opacity = '1';
+          setTimeout(function () { btn.textContent = '\u21BB'; btn.style.color = ''; btn.style.pointerEvents = ''; }, 3000);
+        });
+      });
+      cell.appendChild(btn);
+    });
+  }
+
+  function recheckSinglePost(cat, post, numreponse, cache, callback) {
+    checkPost(cat, post, numreponse).then(function (r) {
+      if (!r) { callback(null); return; }
+      var key = makeCacheKey(cat, numreponse);
+      cache[key] = { flagged: r.flagged, checkedAt: Date.now() };
+      saveCache(cache);
+      if (r.flagged) markPostFlagged(numreponse);
+      // Reporter au Worker
+      reportToWorker([{ cat: cat, post: post, numreponse: numreponse, flagged: r.flagged }]);
+      callback(r);
+    });
   }
 
   // --- Widget de statut ---
@@ -770,6 +838,17 @@
 
     // Phase 1 : cache local
     var cache = pruneCache(loadCache());
+
+    // Menu TM : re-scanner la page (toujours disponible)
+    GM_registerMenuCommand('RedFlag: Re-scanner la page', function () {
+      // Invalider le cache local pour tous les posts de la page
+      numreponses.forEach(function (num) {
+        delete cache[makeCacheKey(page.cat, num)];
+      });
+      saveCache(cache);
+      console.log(PREFIX, 'Cache invalide pour', numreponses.length, 'posts, rechargement...');
+      location.reload();
+    });
     var toFetch = [];
     var flagged = 0;
 
@@ -793,6 +872,11 @@
       });
     }
 
+    // Ajouter les boutons re-check si la pref est activee
+    function addRecheckIfEnabled() {
+      if (prefs.forceCheck) addRecheckButtons(page, cache);
+    }
+
     if (toFetch.length === 0) {
       if (flagged > 0) {
         showWidget('RedFlag: ' + flagged + ' alert\u00e9' + (flagged > 1 ? 's' : ''), 5000);
@@ -800,6 +884,7 @@
         showWidget('RedFlag: aucune alerte', 3000);
       }
       saveCache(cache);
+      addRecheckIfEnabled();
       return;
     }
 
@@ -830,6 +915,7 @@
           showWidget('RedFlag: aucune alerte', 3000);
         }
         saveCache(cache);
+        addRecheckIfEnabled();
         return;
       }
 
@@ -903,6 +989,7 @@
         } else {
           hideWidget();
         }
+        addRecheckIfEnabled();
       });
     });
   }

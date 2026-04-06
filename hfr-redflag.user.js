@@ -2,7 +2,7 @@
 // @name         [HFR] RedFlag
 // @namespace    https://github.com/XaaT/hfr-redflag
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=hardware.fr
-// @version      0.7.7
+// @version      0.7.8
 // @description  Met en evidence les posts alertes a la moderation sur forum.hardware.fr
 // @author       xat
 // @match        https://forum.hardware.fr/forum2.php*
@@ -23,6 +23,7 @@
 // @license      MIT
 // ==/UserScript==
 // --- Changelog ---
+//   0.7.8 - Fix detection : textarea seul, multi-langue, corrige faux negatifs sur "rejoindre" et faux positifs EN
 //   0.7.7 - Fix detection : marqueur "UNIQUEMENT" au lieu de textarea (evite faux negatifs sur alertes en attente)
 //   0.7.6 - Fix force check : placement a gauche du /!\, alignement, pas de decalage au hover
 //   0.7.5 - Force check : bouton re-verifier par post (hover, opt-in) + re-scanner la page (menu TM)
@@ -632,10 +633,10 @@
           return resolve(null);
         }
         var html = xhr.responseText;
-        // Marqueur unique du formulaire "pas encore alerte"
-        // Si ce texte est present, le post n'a jamais ete alerte
-        // Tout autre cas (alerte traitee, en attente, formulaire pour rejoindre) = alerte
-        if (html.indexOf('UNIQUEMENT') !== -1) {
+        // Le textarea "raison" n'existe que sur le formulaire de premiere alerte
+        // Il est absent du "rejoindre" (juste un bouton Confirmer) et des pages "deja traite"
+        // Fonctionne en FR et EN (element HTML, pas de texte localise)
+        if (html.indexOf('<textarea') !== -1) {
           return resolve({ numreponse: numreponse, flagged: false });
         }
         resolve({ numreponse: numreponse, flagged: true });
